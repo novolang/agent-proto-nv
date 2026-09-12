@@ -1,0 +1,404 @@
+// agpsession.nv — the state machine as a value.  This module is the
+// package's load-bearing interface.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// MCP's REAL FAILURE MODE IS ORDERING, AND NO MESSAGE TYPE SHOWS IT.
+// A well-formed `tools/list` sent before `initialize` has been answered
+// is a valid JSON-RPC request with a valid method and valid params,
+// and it is wrong.  A server that sends a request before the client's
+// `notifications/initialized` has arrived is wrong the same way.  A
+// request after a shutdown is wrong.  None of that is visible in the
+// message — it is visible only in what has already happened — so a
+// library whose whole surface is message types leaves its callers to
+// rediscover the sequence one hung connection at a time.
+//
+// So the session is a VALUE, and `may_send` answers before a byte
+// reaches a socket:
+//
+//   let s = agpsession.client_session()
+//   agpsession.may_send(s, "tools/list")   // AgpNotYet — initialize first
+//
+// AND THAT IS WHY IT IS TRANSPORT-INDEPENDENT.  MCP runs over stdio,
+// over SSE and over streamable HTTP.  Three framings, three sets of
+// connection lifecycle problems — and ONE state machine, identical in
+// all of them.  Putting it in a `core` package with no transport is
+// what lets the same value be checked in a unit test, driven by a
+// subprocess client, and reused by a server.
+//
+// THE VERSION IS PART OF THE STATE, not a field beside it.  What may
+// be sent depends on what was agreed: a capability the peer did not
+// declare is not available, and a method a later revision introduced
+// is not available at an earlier one.  So negotiation moves the state
+// and `may_send` reads both.
+//
+// WHAT THIS IS NOT: a scheduler.  The session tracks what is
+// OUTSTANDING so a response can be matched and a duplicate id refused;
+// it does not decide what to send next, time anything out, or retry.
+// A `core` package has no clock, and the caller that has one is better
+// placed to decide.
+
+use agperror
+use agpwire
+
+// Where a connection is in its lifecycle.
+pub enum AgpState
+    // Nothing has been sent.  Only `initialize` may go out.
+    AgpFresh
+    // `initialize` is outstanding.  Nothing else may be sent — which
+    // is the rule an eager client breaks first.
+    AgpInitializing
+    // The peer answered `initialize` and the client has not yet sent
+    // `notifications/initialized`.
+    //
+    // A state of its own because the specification puts a real
+    // obligation in it: the client must send that notification, and a
+    // server is entitled to wait for it before it sends anything of
+    // its own.  A client that skipped it has a session that looks
+    // connected and receives nothing.
+    AgpInitialized
+    // Both sides are ready.  Everything the negotiated capabilities
+    // allow may be sent.
+    AgpReady
+    // A shutdown has begun.  Nothing new may be sent; outstanding
+    // responses may still arrive.
+    AgpClosing
+    // The connection is over, by shutdown or by a fatal fault.
+    AgpClosed
+
+// Whether a call is allowed, and why not when it is not.
+//
+// Three answers rather than a boolean, because the two refusals lead a
+// caller to opposite actions: `AgpNotYet` means finish the handshake
+// and try again, `AgpNotOffered` means this peer will never do it and
+// the caller should stop asking.
+pub enum AgpAllowed
+    // Send it.
+    AgpAllow
+    // Legal for this peer, but not in this state.  Carries the state,
+    // so a log line says what to wait for.
+    AgpNotYet(state: Str)
+    // The peer did not declare the capability this method needs, or
+    // the negotiated version does not have it.  Carries the capability
+    // name.
+    AgpNotOffered(capability: Str)
+
+// What one side of a connection says it can do.
+//
+// A struct of named booleans rather than a `[Str]` of capability
+// names, which is what the standard library's `McpClient.capabilities`
+// answers today: a typo in a string is a capability silently absent,
+// and a caller that wrote `"tool"` gets `false` with no complaint.
+pub struct AgpCapabilities
+    // The peer offers tools.
+    tools: Bool
+    // The peer will notify when its tool list changes.
+    tools_list_changed: Bool
+    // The peer offers resources.
+    resources: Bool
+    // The peer will notify when its resource list changes.
+    resources_list_changed: Bool
+    // The peer supports subscribing to a resource.
+    resources_subscribe: Bool
+    // The peer offers prompts.
+    prompts: Bool
+    // The peer will notify when its prompt list changes.
+    prompts_list_changed: Bool
+    // The peer will sample from a model on request — a SERVER asking a
+    // CLIENT, which is the direction people are surprised by.
+    sampling: Bool
+    // The peer will answer a request for its roots.
+    roots: Bool
+    // The peer will notify when its roots change.
+    roots_list_changed: Bool
+    // The peer accepts `logging/setLevel` and emits log notifications.
+    logging: Bool
+    // The peer accepts elicitation — a server asking the user for
+    // input through the client.
+    elicitation: Bool
+    // Capability names the peer declared that this package does not
+    // know, kept rather than dropped so a caller can report what a
+    // newer peer offered.
+    unknown: [Str]
+
+// Who the peer says it is.
+pub struct AgpPeerInfo
+    // The implementation's name.
+    name: Str
+    // Its version.
+    version: Str
+    // A human-readable title, when the negotiated revision has one.
+    title: Str
+
+// A connection's whole protocol state.
+//
+// Everything that decides what may be sent, in one value that goes in
+// and comes out of every call.  No clock, no socket, no buffer: those
+// are the host's, and this is what the host checks against.
+pub struct AgpSession
+    // Which end of the connection this value belongs to.
+    side: agpwire.AgpSide
+    // Where the connection is.
+    state: AgpState
+    // The protocol version agreed, or an empty string before
+    // negotiation.
+    version: Str
+    // What the PEER said it can do.  Empty before `initialize` is
+    // answered, which is why `may_send` refuses capability-gated
+    // methods in every state before `AgpReady`.
+    peer: AgpCapabilities
+    // Who the peer says it is.
+    peer_info: AgpPeerInfo
+    // What THIS side declared, kept so a caller can answer a peer's
+    // question about its own capabilities without storing them twice.
+    own: AgpCapabilities
+    // The ids of requests sent and not yet answered, in the order they
+    // went out.
+    //
+    // Here so a response can be matched and a duplicate id refused —
+    // not so anything can be timed out or retried, which needs a clock
+    // this package does not have.
+    outstanding: [agpwire.AgpId]
+
+// ── Starting ─────────────────────────────────────────────────────────
+
+// A fresh client session, with the capabilities this side offers.
+pub fn client_session(own: AgpCapabilities) -> AgpSession []
+    todo("agent-proto-nv.agpsession.client_session")
+
+// A fresh server session.
+pub fn server_session(own: AgpCapabilities) -> AgpSession []
+    todo("agent-proto-nv.agpsession.server_session")
+
+// No capabilities at all.
+//
+// What a minimal client declares, and the value a caller builds on
+// with the `with_*` calls rather than writing twelve booleans.
+pub fn no_capabilities() -> AgpCapabilities []
+    todo("agent-proto-nv.agpsession.no_capabilities")
+
+// The capabilities with tools turned on.
+pub fn with_tools(c: AgpCapabilities, list_changed: Bool) -> AgpCapabilities []
+    todo("agent-proto-nv.agpsession.with_tools")
+
+// The capabilities with resources turned on.
+pub fn with_resources(c: AgpCapabilities, list_changed: Bool, subscribe: Bool) -> AgpCapabilities []
+    todo("agent-proto-nv.agpsession.with_resources")
+
+// The capabilities with prompts turned on.
+pub fn with_prompts(c: AgpCapabilities, list_changed: Bool) -> AgpCapabilities []
+    todo("agent-proto-nv.agpsession.with_prompts")
+
+// The capabilities with sampling turned on.
+pub fn with_sampling(c: AgpCapabilities) -> AgpCapabilities []
+    todo("agent-proto-nv.agpsession.with_sampling")
+
+// The capabilities with roots turned on.
+pub fn with_roots(c: AgpCapabilities, list_changed: Bool) -> AgpCapabilities []
+    todo("agent-proto-nv.agpsession.with_roots")
+
+// The capabilities with logging turned on.
+pub fn with_logging(c: AgpCapabilities) -> AgpCapabilities []
+    todo("agent-proto-nv.agpsession.with_logging")
+
+// Whether a capability name is declared, by name.
+//
+// The bridge from `McpClient.capabilities`, which answers a `[Str]`:
+// a caller holding those strings can ask this rather than comparing
+// them itself.
+pub fn has_capability(c: AgpCapabilities, name: Str) -> Bool []
+    todo("agent-proto-nv.agpsession.has_capability")
+
+// Every capability the peer declared, as the names the protocol uses.
+//
+// The other direction, for a caller that has to report or log what a
+// peer offered.
+pub fn capability_names(c: AgpCapabilities) -> [Str] []
+    todo("agent-proto-nv.agpsession.capability_names")
+
+// ── Versions ─────────────────────────────────────────────────────────
+
+// The protocol revisions this package implements, newest first.
+//
+// Data rather than a constant in prose, because a caller that has to
+// interoperate with an older peer needs the list and because the test
+// suite asserts it against what the toolchain actually speaks.
+pub fn versions_supported() -> [Str] []
+    todo("agent-proto-nv.agpsession.versions_supported")
+
+// The newest revision this package implements.
+//
+// What a client proposes in `initialize` when it has no reason to
+// propose otherwise.
+pub fn latest_version() -> Str []
+    todo("agent-proto-nv.agpsession.latest_version")
+
+// The revision the standard library's `McpClient` speaks today:
+// `2024-11-05`.
+//
+// PUBLISHED AS A FUNCTION AND NOT AS A SENTENCE, because it is the one
+// fact that decides whether a program built on `std.mcp` and one built
+// on this package can talk to the same server without a negotiation
+// surprise. When the stdlib moves, this moves with it and the test
+// that compares the two fails until it does.
+pub fn stdlib_version() -> Str []
+    todo("agent-proto-nv.agpsession.stdlib_version")
+
+// Whether this package implements a revision.
+pub fn supports_version(v: Str) -> Bool []
+    todo("agent-proto-nv.agpsession.supports_version")
+
+// The version a client should settle on, given what it proposed and
+// what the server answered.
+//
+// THE NEGOTIATION RULE, IN ONE CALL.  A client proposes its newest; a
+// server answers with a version it supports, which may be OLDER and
+// may be one the client cannot speak. `AgpVersionRejected` carrying
+// both strings is the third case, and it is the one where the right
+// move is to disconnect rather than to carry on hopefully.
+pub fn negotiate(proposed: Str, offered: Str) -> Result<Str, agperror.AgpFault> []
+    todo("agent-proto-nv.agpsession.negotiate")
+
+// Whether a method exists at a negotiated revision.
+//
+// A later revision adds methods, and a peer at an earlier one answers
+// `-32601` for them. Asking before sending turns a round trip into a
+// local check.
+pub fn method_in_version(method: Str, version: Str) -> Bool []
+    todo("agent-proto-nv.agpsession.method_in_version")
+
+// ── The call this module exists for ──────────────────────────────────
+
+// Whether this side may send this method right now.
+//
+// THE LOAD-BEARING CALL OF THIS PACKAGE.  Three things decide it: the
+// state, the negotiated version, and the capabilities the peer
+// declared — and none of the three is visible in the message.
+//
+// ```novo ignore
+// match agpsession.may_send(s, "tools/list")
+//     AgpAllow            => send(agptool.list_request(next_id()))
+//     AgpNotYet(state)    => println("not yet: ${state}")
+//     AgpNotOffered(cap)  => println("this server has no ${cap}")
+// ```
+pub fn may_send(s: AgpSession, method: Str) -> AgpAllowed []
+    todo("agent-proto-nv.agpsession.may_send")
+
+// Whether this side may RECEIVE this method right now.
+//
+// The other half, and not the same question: MCP is bidirectional, so
+// a client that received `tools/list` has met a peer doing something
+// wrong, and answering it politely would be worse than refusing.
+pub fn may_receive(s: AgpSession, method: Str) -> AgpAllowed []
+    todo("agent-proto-nv.agpsession.may_receive")
+
+// Every method this side may send right now.
+//
+// For a caller building a menu, and for the test that says the
+// handshake opened the session rather than only changing a field.
+pub fn allowed_methods(s: AgpSession) -> [Str] []
+    todo("agent-proto-nv.agpsession.allowed_methods")
+
+// ── Moving the state ─────────────────────────────────────────────────
+
+// The session after a message has been sent.
+//
+// `AgpWrongState` when `may_send` would have refused it, so a caller
+// that skipped the check still cannot get a session into a state the
+// protocol does not have. `AgpDuplicateId` when the id is already
+// outstanding, because two requests with one id make the second answer
+// unattributable.
+pub fn sent(s: AgpSession, m: agpwire.AgpMessage) -> Result<AgpSession, agperror.AgpFault> []
+    todo("agent-proto-nv.agpsession.sent")
+
+// The session after a message has been received.
+//
+// This is where the `initialize` result lands: the negotiated version
+// and the peer's capabilities come off it and into the session, which
+// is what moves `AgpInitializing` to `AgpInitialized`.
+//
+// `AgpUnknownId` when a response matches no outstanding request — a
+// duplicate answer, or one after a cancellation. The right move is to
+// DROP it, which is why it is a fault a caller can distinguish rather
+// than a session that fails.
+pub fn received(s: AgpSession, m: agpwire.AgpMessage) -> Result<AgpSession, agperror.AgpFault> []
+    todo("agent-proto-nv.agpsession.received")
+
+// The session after a shutdown has begun.
+//
+// A transport-level event rather than a message: stdio closes a pipe,
+// HTTP closes a connection, and neither sends anything. So it is a
+// call rather than a `sent`.
+pub fn closing(s: AgpSession) -> AgpSession []
+    todo("agent-proto-nv.agpsession.closing")
+
+// The session after the connection is gone.
+pub fn closed(s: AgpSession) -> AgpSession []
+    todo("agent-proto-nv.agpsession.closed")
+
+// ── Reading a session ────────────────────────────────────────────────
+
+// Whether the handshake is complete and ordinary traffic may flow.
+pub fn is_ready(s: AgpSession) -> Bool []
+    todo("agent-proto-nv.agpsession.is_ready")
+
+// The state's name, for a log line and for `AgpNotYet`.
+pub fn state_name(st: AgpState) -> Str []
+    todo("agent-proto-nv.agpsession.state_name")
+
+// How many requests are outstanding.
+//
+// The number a caller draining a connection waits down to zero, and
+// the one a test asserts to show a response was matched rather than
+// dropped.
+pub fn outstanding_count(s: AgpSession) -> Int []
+    todo("agent-proto-nv.agpsession.outstanding_count")
+
+// Whether an id is outstanding.
+pub fn is_outstanding(s: AgpSession, id: agpwire.AgpId) -> Bool []
+    todo("agent-proto-nv.agpsession.is_outstanding")
+
+// ── The handshake, as messages ───────────────────────────────────────
+
+// The `initialize` request this side should send.
+//
+// Carries the proposed version, this side's capabilities and its own
+// name — all three of which are already on the session, which is why
+// this takes only an id.
+pub fn initialize_request(s: AgpSession, id: agpwire.AgpId,
+                          info: AgpPeerInfo) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpsession.initialize_request")
+
+// The `initialize` result a server should answer with.
+pub fn initialize_result(s: AgpSession, id: agpwire.AgpId, version: Str,
+                         info: AgpPeerInfo) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpsession.initialize_result")
+
+// The `notifications/initialized` a client must send after it has the
+// result.
+//
+// Its own call because it is the step a client skips: the session
+// looks connected without it and the server is entitled to send
+// nothing.
+pub fn initialized_notification() -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpsession.initialized_notification")
+
+// Whether the handshake still owes a message.
+//
+// True in `AgpInitialized`, where the client has the result and has
+// not sent the notification. The predicate that turns "my server never
+// sends anything" into a line a caller can assert.
+pub fn handshake_incomplete(s: AgpSession) -> Bool []
+    todo("agent-proto-nv.agpsession.handshake_incomplete")
+
+// The capabilities a peer's `initialize` params or result declared.
+//
+// Published because a server reading a client's `initialize` needs
+// exactly this, and because a caller that logged the raw JSON would
+// otherwise write the same walk.
+pub fn capabilities_of(v: JsonValueH) -> AgpCapabilities []
+    todo("agent-proto-nv.agpsession.capabilities_of")
+
+// The peer information an `initialize` message declared.
+pub fn peer_info_of(v: JsonValueH) -> AgpPeerInfo []
+    todo("agent-proto-nv.agpsession.peer_info_of")

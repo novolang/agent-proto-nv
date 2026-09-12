@@ -1,0 +1,128 @@
+// agpcodec_tests.nv — text, framing's absence, and the two facts about
+// the standard library's JSON that a paragraph could not have caught.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: agent-proto-nv.<module>.<fn>`.
+//
+// THE ASSERTION THIS SUITE EXISTS FOR: `{}` and `null` are
+// distinguishable, and this test says so by comparing the package's own
+// claim against `json.type_of`'s actual behaviour.  schema-nv 0.0.1's
+// manifest records the opposite as its known limitation, and
+// `json.type_of` has since landed — so the paragraph is stale and the
+// assertion is what noticed.  When the two disagree again, this fails.
+
+use std.test
+use std.list
+use std.json
+use agpcodec
+use agpwire
+use agpsession
+use agpmeta
+use agperror
+
+fn empty_object() -> JsonValueH
+    json.parse("{}") ?? json.null()
+
+@test
+fn test_an_empty_object_is_not_a_null_and_the_claim_is_compared_to_the_fact() [io]
+    test.case("THE CLAIM: the standard library can tell them apart, through type_of")
+    test.assert(json.type_of(empty_object()) == "object")
+    test.assert(json.type_of(json.null()) == "null")
+    test.assert(json.is_null(json.null()))
+    test.assert(json.is_null(empty_object()) == false)
+
+    test.case("so this package's own answer agrees with what the library actually does")
+    test.assert(agpcodec.distinguishes_empty_object_from_null())
+    test.assert(agpcodec.distinguishes_empty_object_from_null()
+                == (json.type_of(empty_object()) != json.type_of(json.null())))
+
+    test.case("which is what the extractors alone could NOT have said")
+    test.assert(list.len(json.keys(empty_object())) == list.len(json.keys(json.null())))
+
+@test
+fn test_a_large_id_is_where_a_number_stops_being_exact() [io]
+    test.case("THE CLAIM: a JSON-RPC id may be any number, and a client should know")
+    test.assert(agpcodec.number_is_exact(1))
+    test.assert(agpcodec.number_is_exact(1000000))
+
+    test.case("and the string spelling is the answer for a caller that needs large ids")
+    test.assert(agpwire.id_eq(AgpIdStr("018f2e5a-7c31"), AgpIdStr("018f2e5a-7c31")))
+
+@test
+fn test_the_text_form_carries_no_framing_at_all() [io]
+    let m = agpwire.request(AgpIdNum(1), "ping", None)
+
+    test.case("THE CLAIM: no newline, no Content-Length, no data: prefix")
+    let t = agpcodec.to_text(m)
+    test.assert(t != "")
+    test.assert(json.type_of(json.parse(t) ?? json.null()) == "object")
+
+    test.case("because three transports share one message format")
+    match agpcodec.of_text(t)
+        Err(_) => test.assert(false)
+        Ok(m2) => test.assert(agpcodec.message_eq(m, m2))
+
+    test.case("and a round trip is a VALUE identity, not a byte one")
+    test.assert(agpcodec.round_trips(m))
+
+@test
+fn test_a_receiver_takes_a_batch_or_a_message_through_one_call() [io]
+    test.case("THE CLAIM: an array is a batch, an object is a message, one loop either way")
+    match agpcodec.any_of_text("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}")
+        Err(_) => test.assert(false)
+        Ok(b)  => test.assert(list.len(b.messages) == 1)
+
+    test.case("and text that is not JSON at all is the shape a framing bug produces")
+    match agpcodec.of_text("{\"jsonrpc\":\"2.0\"}{\"jsonrpc\":\"2.0\"}")
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(agperror.describe(e) != "")
+
+@test
+fn test_decoding_against_a_session_checks_the_ordering_at_the_one_gate() [io]
+    let s = agpsession.client_session(agpsession.no_capabilities())
+
+    test.case("THE CLAIM: the state is in scope here and is not three layers up")
+    match agpcodec.encode_in(s, agpwire.request(AgpIdNum(1), "tools/list", None))
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(agperror.is_fatal(e))
+
+    test.case("while the one message a fresh session may send goes out")
+    let init = agpsession.initialize_request(s, AgpIdNum(1),
+                                             AgpPeerInfo { name: "novo", version: "0.8.9",
+                                                           title: "" })
+    match agpcodec.encode_in(s, init)
+        Err(_) => test.assert(false)
+        Ok(t)  => test.assert(t != "")
+
+    test.case("and a version-aware decode refuses a method that revision does not have")
+    match agpcodec.decode_for(empty_object(), agpsession.stdlib_version())
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(agperror.describe(e) != "")
+
+@test
+fn test_the_progress_token_lives_in_meta_and_not_in_the_params() [io]
+    let m = agpwire.request(AgpIdNum(1), "tools/call", None)
+
+    test.case("THE CLAIM: a request without one gets no progress, however long it takes")
+    test.assert(agpmeta.progress_token_of(m) == None)
+
+    test.case("and attaching one is a call, because _meta is where a hand-written one misses")
+    let with_token = agpmeta.with_progress_token(m, AgpProgNum(7))
+    test.assert(agpmeta.progress_token_of(with_token) != None)
+
+    test.case("two token spellings are two tokens, as two id spellings are two ids")
+    test.assert(agpmeta.token_eq(AgpProgNum(7), AgpProgStr("7")) == false)
+    test.assert(agpmeta.token_eq(AgpProgNum(7), AgpProgNum(7)))
+
+@test
+fn test_an_unknown_total_is_not_a_total_of_zero() [io]
+    let note = agpmeta.progress_notification(AgpProgNum(7), 3.0, 0.0 - 1.0, "working")
+
+    test.case("THE CLAIM: a caller comparing against 0 draws a full bar for an unknown one")
+    test.assert(agpwire.expects_response(note) == false)
+    test.assert(agpwire.method_of(note) == "notifications/progress")
+
+    test.case("and a ping is the only request whose answer is an empty object")
+    test.assert(agpmeta.is_ping(agpmeta.ping_request(AgpIdNum(1))))
+    test.assert(agpmeta.is_ping(note) == false)
+    test.assert(agpwire.is_response(agpmeta.ping_result(AgpIdNum(1))))

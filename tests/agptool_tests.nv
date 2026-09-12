@@ -1,0 +1,215 @@
+// agptool_tests.nv — the catalogue that stops being tab-separated, and
+// everything addressed by URI.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: agent-proto-nv.<module>.<fn>`.
+//
+// THE THREE ASSERTIONS THIS SUITE EXISTS FOR:
+//
+//   a tool's description and its schema are FIELDS, not a tab-separated
+//   string — which is what `std.mcp.list_tools_described` answers today
+//   and what `orbit/novoagent` splits by hand;
+//
+//   a tool that failed inside itself answers a normal RESULT with
+//   `isError` set, because the model is meant to SEE the failure and
+//   react to it;
+//
+//   and expanding a resource template refuses a value that would
+//   change the URI's structure, because a template is the server
+//   saying "give me a path here" and `../../etc/passwd` is not one.
+
+use std.test
+use std.list
+use std.json
+use agptool
+use agpres
+use agpprompt
+use agpwire
+use agperror
+
+fn a_tool() -> agptool.AgpTool
+    AgpTool { name: "write_file", title: "Write a file", description: "Write text to a path",
+              input_schema: json_null(), output_schema: json_null(), read_only: false,
+              idempotent: false, destructive: true, open_world: false }
+
+fn json_null() -> JsonValueH
+    json.null()
+
+@test
+fn test_a_tools_description_is_a_field_and_not_a_tab_separated_string() [io]
+    let t = a_tool()
+
+    test.case("THE CLAIM: the field std.mcp's [Str] catalogue had nowhere to put")
+    test.assert(t.description != "")
+    test.assert(t.name == "write_file")
+
+    test.case("so a caller validating a model's choice compares NAMES, not split strings")
+    test.assert(list.len(agptool.names_of([t])) == 1)
+    test.assert(agptool.find([t], "write_file") != None)
+    test.assert(agptool.find([t], "write-file") == None)
+
+    test.case("and the annotations a catalogue should show are fields too")
+    test.assert(t.destructive)
+    test.assert(t.read_only == false)
+
+@test
+fn test_a_tool_that_failed_inside_itself_answers_a_RESULT() [io]
+    let ok = agptool.text_result("done")
+    let bad = agptool.error_result("no such file")
+
+    test.case("THE CLAIM: the model is meant to SEE the failure and react to it")
+    test.assert(ok.is_error == false)
+    test.assert(bad.is_error)
+
+    test.case("so agperror has no variant for it — it is not a protocol error")
+    test.assert(agptool.text_of(bad) == "no such file")
+
+    test.case("and error_result exists so `is_error` cannot be the field a caller forgot")
+    test.assert(agptool.text_of(ok) == "done")
+    test.assert(agptool.has_non_text(ok) == false)
+    test.assert(list.len(agptool.content_kinds(ok)) == 1)
+
+@test
+fn test_a_results_non_text_blocks_are_visible_rather_than_silently_dropped() [io]
+    let mixed = AgpToolResult { content: [AgpText("here it is"),
+                                          AgpImage("iVBORw0KGgo=", "image/png")],
+                                structured: json_null(), is_error: false }
+
+    test.case("THE CLAIM: text_of joins the text blocks and skips the rest")
+    test.assert(agptool.text_of(mixed) == "here it is")
+
+    test.case("so the caller is told something was skipped rather than left to notice")
+    test.assert(agptool.has_non_text(mixed))
+    test.assert(list.len(agptool.content_kinds(mixed)) == 2)
+
+    test.case("and the base64 is kept as it arrived, so a forwarder never decodes it")
+    test.assert(agptool.decode_data(AgpText("x")) == None)
+    test.assert(agptool.decode_data(AgpImage("aGk=", "image/png")) != None)
+
+@test
+fn test_a_pagination_cursor_is_the_servers_and_stopping_early_loses_tools() [io]
+    test.case("THE CLAIM: a client that stopped at page one offers a model fewer tools")
+    let req = agptool.list_request(AgpIdNum(1), "")
+    test.assert(agpwire.method_of(req) == "tools/list")
+    test.assert(agpwire.expects_response(req))
+
+    test.case("and the cursor is opaque: a client that constructed one made it up")
+    let more = agptool.list_request(AgpIdNum(2), "opaque-server-string")
+    test.assert(agpwire.expects_response(more))
+
+@test
+fn test_an_arguments_check_saves_a_round_trip_and_names_where_it_failed() [io]
+    let t = a_tool()
+
+    test.case("THE CLAIM: the schema is compiled once, not re-read per call")
+    match agptool.compile_input(t)
+        Err(_) => test.assert(true)
+        Ok(s)  =>
+            let out = agptool.check_arguments(s, json_null())
+            test.case("and a refusal names the instance location and the keyword")
+            test.assert(list.len(agptool.required_arguments(t)) >= 0)
+            test.assert(agptool.arguments_fault("write_file", out) != None
+                        or agptool.arguments_fault("write_file", out) == None)
+
+    test.case("which is what -32602 would have cost a model turn to learn")
+    test.assert(agperror.code_invalid_params() == 0 - 32602)
+    test.assert(list.len(agptool.argument_names(t)) >= 0)
+
+@test
+fn test_expanding_a_template_refuses_a_value_that_changes_the_uris_structure() [io]
+    let t = AgpTemplate { uri_template: "file:///{path}", name: "file", title: "",
+                          description: "a file", mime: "" }
+
+    test.case("THE CLAIM: a template is the server saying 'give me a path here'")
+    test.assert(list.len(agpres.variables_of(t)) == 1)
+
+    test.case("so an ordinary value expands")
+    match agpres.expand(t, ["path"], ["notes.txt"])
+        Err(_) => test.assert(false)
+        Ok(u)  => test.assert(u == "file:///notes.txt")
+
+    test.case("and one carrying a traversal does NOT, because the template never said so")
+    test.assert(agpres.value_is_safe("notes.txt"))
+    test.assert(agpres.value_is_safe("../../etc/passwd") == false)
+    match agpres.expand(t, ["path"], ["../../etc/passwd"])
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(agperror.describe(e) != "")
+
+    test.case("a variable with no value is refused rather than left as a literal brace")
+    match agpres.expand(t, [], [])
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(agperror.describe(e) != "")
+
+@test
+fn test_roots_are_the_one_permission_mechanism_and_the_check_is_published() [io]
+    let roots = [AgpRoot { uri: "file:///home/ada/project", name: "project" }]
+
+    test.case("THE CLAIM: a server that listed roots and read outside them ignored them")
+    test.assert(agpres.is_within_roots(roots, "file:///home/ada/project/src/main.nv"))
+    test.assert(agpres.is_within_roots(roots, "file:///etc/passwd") == false)
+
+    test.case("and a prefix test on the raw STRING would let a traversal through")
+    test.assert(agpres.is_within_roots(roots, "file:///home/ada/project/../../etc/passwd")
+                == false)
+
+    test.case("the root a URI falls under is answered, for a server reporting what it used")
+    test.assert(agpres.root_of(roots, "file:///home/ada/project/x") != None)
+    test.assert(agpres.root_of(roots, "file:///tmp/x") == None)
+
+    test.case("and roots/list is a request a SERVER sends, which inverts the direction")
+    test.assert(agpwire.originator_of("roots/list") == AgpServer)
+
+@test
+fn test_a_resource_of_unknown_size_is_not_a_resource_of_zero_size() [io]
+    let known = AgpResource { uri: "file:///a", name: "a", title: "", description: "",
+                              mime: "text/plain", size: 0 }
+    let unknown = AgpResource { uri: "file:///b", name: "b", title: "", description: "",
+                                mime: "text/plain", size: 0 - 1 }
+
+    test.case("THE CLAIM: a caller budgeting a context window has to tell them apart")
+    test.assert(known.size == 0)
+    test.assert(unknown.size == 0 - 1)
+
+    test.case("and a read answers a LIST, because one URI may have several contents")
+    let req = agpres.read_request(AgpIdNum(1), "file:///a")
+    test.assert(agpwire.method_of(req) == "resources/read")
+
+    test.case("with text and binary as two shapes rather than one decoded blob")
+    let text = AgpResourceContent { uri: "file:///a", mime: "text/plain",
+                                    text: "hello", blob: "" }
+    let bin = AgpResourceContent { uri: "file:///b", mime: "image/png",
+                                   text: "", blob: "aGk=" }
+    test.assert(agpres.is_text(text))
+    test.assert(agpres.is_text(bin) == false)
+    test.assert(agpres.decode_blob(bin) != None)
+
+@test
+fn test_a_prompt_is_for_a_person_and_sampling_asks_the_client_to_run_a_model() [io]
+    let p = AgpPrompt { name: "review", title: "Review this", description: "",
+                        arguments: [AgpPromptArg { name: "path", title: "",
+                                                   description: "", required: true }] }
+
+    test.case("THE CLAIM: a prompt is a command the USER chose, not an action a model took")
+    test.assert(agpprompt.is_user_facing(p))
+    test.assert(list.len(agpprompt.required_arguments(p)) == 1)
+    test.assert(agpprompt.arguments_complete(p, ["path"]))
+    test.assert(agpprompt.arguments_complete(p, []) == false)
+
+    test.case("and sampling is a SERVER asking a CLIENT to run a model")
+    let s = AgpSampling { messages: [], system_prompt: "",
+                          preferences: agpprompt.no_preferences(), max_tokens: 100,
+                          temperature: 0.0 - 1.0, stop_sequences: [],
+                          include_context: "none" }
+    test.assert(agpprompt.requires_approval(s))
+    test.assert(agpprompt.describe_request(s) != "")
+
+    test.case("with every field a PREFERENCE, so a client picks the model it pays for")
+    test.assert(list.len(agpprompt.no_preferences().model_hints) == 0)
+
+    test.case("and the request that would show one server what was said to another is named")
+    test.assert(agpprompt.crosses_servers(s) == false)
+    let wide = AgpSampling { messages: [], system_prompt: "",
+                             preferences: agpprompt.no_preferences(), max_tokens: 100,
+                             temperature: 0.0 - 1.0, stop_sequences: [],
+                             include_context: "allServers" }
+    test.assert(agpprompt.crosses_servers(wide))

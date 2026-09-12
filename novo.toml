@@ -1,0 +1,72 @@
+[package]
+name        = "agent-proto-nv"
+version     = "0.0.1"
+description = "The Model Context Protocol as novo-lang types over the standard library's JSON value: the JSON-RPC 2.0 envelope, initialize and capabilities, tools with schema-nv compiled input schemas, resources and templates, prompts, sampling, roots, logging, progress and cancellation.  The load-bearing value is `AgpSession` — a transport-independent state machine that says what may be sent in which state, because MCP's real failure mode is ORDERING and no message type shows it.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`, and for this package that is the whole design rather than a
+# budget it happens to fit.  A protocol library that owned a transport
+# would be a protocol library a caller could only use over that
+# transport — and MCP has three (stdio, SSE, streamable HTTP) with one
+# state machine between them.
+#
+# So nothing here connects, spawns or writes: messages are values, the
+# session is a value, and `agpsession.may_send` answers what is legal
+# before a byte reaches a socket the HOST owns.  The standard library's
+# `McpClient` is that host, and its `[io, mcp]` row is where the
+# performing lives.
+layer       = "core"
+
+category    = "ai"
+
+tags        = ["mcp", "model-context-protocol", "json-rpc", "agent", "tools", "protocol", "sans-io"]
+repository  = "https://github.com/novolang/agent-proto-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "The protocol as a value, and a state that says what may be sent"
+
+[dependencies]
+# schema-nv, for a tool's input schema.
+#
+# An MCP tool declares its arguments as a JSON Schema, and the whole
+# point of that declaration is that a caller can CHECK an argument
+# object against it before it spends a model turn on a call the server
+# will refuse.  schema-nv is 2020-12's validation and applicator
+# vocabularies over the same standard-library JSON value this package
+# uses, it is `core`, and it takes no dependencies of its own.
+#
+# It is taken BY RANGE rather than vendored: an input schema is a
+# `SchSchema` compiled once with `schcompile.compile`, and
+# `agptool.check_arguments` answers schema-nv's own `SchOutput` — which
+# means a caller reading a refusal gets the instance location, the
+# schema location and the keyword, rather than a boolean this package
+# would have had to invent a worse story around.
+#
+# One thing the lane checked rather than inherited: schema-nv 0.0.1's
+# own manifest records "`std.json` cannot tell `{}` from `null`" as its
+# known limitation, and `json.type_of` / `json.is_null` have since
+# landed and answer exactly that.  The note is stale, this package does
+# not carry it forward, and `agpcodec.distinguishes_empty_object_from_null`
+# answers true — asserted rather than assumed.
+schema-nv = "^0.0.1"
+
+# NOT a JSON package.  The value this protocol carries is the STANDARD
+# LIBRARY's (`std.json`), for the same reason schema-nv gives: a second
+# JSON value type would mean every caller converting a document before
+# it could be sent, and the two would disagree about number precision
+# at the first large integer.
+#
+# NOT an HTTP or a process package.  A transport is the host's, and the
+# README's § What std.mcp keeps says which half is whose.

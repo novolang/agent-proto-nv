@@ -1,0 +1,189 @@
+// agperror.nv — the two kinds of wrong, kept apart.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A PROTOCOL LIBRARY HAS TWO FAILURE VOCABULARIES AND CONFUSING THEM
+// IS THE COMMON BUG.  One is the JSON-RPC ERROR OBJECT — a code, a
+// message and optional data that the PEER sent, which is a normal part
+// of the conversation and travels in a response.  The other is a
+// message this package could not read or a call the session does not
+// allow, which never reaches the peer at all.
+//
+// They are `AgpRpcError` and `AgpFault`, and they are different types
+// on purpose.  A library that folded them into one makes "the server
+// said your argument was invalid" and "you called a method before
+// initialize finished" the same shape, and a caller that retried on
+// both would retry the one that can never succeed.
+//
+// THE STANDARD CODES ARE PUBLISHED AS FUNCTIONS, not as a table in a
+// comment, because a server writing an error and a client reading one
+// have to agree about the number and there is no third place for them
+// to look.
+
+// An error the PEER sent, in a JSON-RPC response.
+//
+// Part of the conversation and not a failure of this package.  A tool
+// that refused its arguments, a resource that does not exist, a
+// sampling request the user declined — all of them arrive here.
+pub struct AgpRpcError
+    // The code.  Negative, and the standard ones are the functions
+    // below; a server may define its own outside the reserved range.
+    code: Int
+    // A short message a person can read.  Not a format string and not
+    // an identifier — a caller that switched on it would be switching
+    // on prose.
+    message: Str
+    // Whatever structured detail the peer attached, or nothing.
+    data: ?JsonValueH
+
+// What this package refuses.
+//
+// Everything here happens on the near side of the transport: a message
+// that could not be read, a call the session does not allow, a version
+// nobody agreed.
+pub enum AgpFault
+    // The bytes are not a JSON-RPC message: not an object, or missing
+    // `jsonrpc`, or carrying a `jsonrpc` that is not `"2.0"`.
+    AgpNotJsonRpc(why: Str)
+    // A message that is neither a request, a response nor a
+    // notification — an object with both `result` and `error`, or with
+    // neither and no `method`.
+    //
+    // The shape JSON-RPC forbids and every implementation eventually
+    // emits by accident, so it has its own variant rather than being
+    // folded into "bad message".
+    AgpAmbiguousMessage
+    // A field the schema requires is absent, or holds the wrong kind.
+    AgpBadField(method: Str, field: Str, why: Str)
+    // A method name this package does not know.
+    //
+    // NOT an error in itself: MCP is extensible and a peer may send
+    // anything. `agpwire.is_known_method` is how a caller tells an
+    // extension from a typo, and this is what `decode` answers when
+    // the caller asked for a typed value it cannot produce.
+    AgpUnknownMethod(method: Str)
+    // The call is not legal in the session's current state.
+    //
+    // THE FAULT THIS PACKAGE EXISTS TO MAKE POSSIBLE.  `tools/list`
+    // before `initialize` has completed, a request from a server before
+    // the `initialized` notification, anything at all after a shutdown
+    // — none of which is visible in the message's own type, and all of
+    // which is a hang or a protocol error on the far side.
+    AgpWrongState(method: Str, state: Str)
+    // The peer answered with a protocol version this package does not
+    // implement.
+    //
+    // Carries what was proposed and what came back, because the
+    // client's decision — disconnect, or carry on at a version it can
+    // speak — needs both.
+    AgpVersionRejected(proposed: Str, offered: Str)
+    // A response arrived whose id matches no outstanding request.
+    //
+    // A duplicate answer, an answer after a cancellation, or a peer
+    // that invented an id. Named separately because the right response
+    // is to DROP it rather than to fail the session.
+    AgpUnknownId(id: Str)
+    // A request used an id that is already outstanding.
+    //
+    // The near-side half of the same rule, and the one a caller's own
+    // bug produces: two requests with one id make the second answer
+    // unattributable.
+    AgpDuplicateId(id: Str)
+    // A tool call's arguments did not match the tool's input schema.
+    //
+    // Carries schema-nv's own count of what failed;
+    // `agptool.check_arguments` answers the `SchOutput` with the
+    // locations in it, and this is the propagating form.
+    AgpArgumentsInvalid(tool: Str, failures: Int)
+    // A batch that the protocol does not allow: empty, or containing a
+    // message that may not be batched.
+    AgpBadBatch(why: Str)
+
+// ── The standard JSON-RPC codes ──────────────────────────────────────
+
+// `-32700`: the peer sent bytes that are not JSON.
+pub fn code_parse_error() -> Int []
+    todo("agent-proto-nv.agperror.code_parse_error")
+
+// `-32600`: valid JSON that is not a valid request.
+pub fn code_invalid_request() -> Int []
+    todo("agent-proto-nv.agperror.code_invalid_request")
+
+// `-32601`: the method does not exist.
+pub fn code_method_not_found() -> Int []
+    todo("agent-proto-nv.agperror.code_method_not_found")
+
+// `-32602`: the parameters are wrong.
+//
+// What a server answers a tool call whose arguments do not match the
+// tool's input schema — which is why `agptool.check_arguments` exists
+// on the client side: the round trip is avoidable.
+pub fn code_invalid_params() -> Int []
+    todo("agent-proto-nv.agperror.code_invalid_params")
+
+// `-32603`: the peer failed internally.
+pub fn code_internal_error() -> Int []
+    todo("agent-proto-nv.agperror.code_internal_error")
+
+// The reserved range, as a pair: `-32768` and `-32000`.
+//
+// A server defining its own codes must stay outside it, and publishing
+// the bounds is how a caller checks rather than remembering.
+pub fn reserved_code_range() -> [Int] []
+    todo("agent-proto-nv.agperror.reserved_code_range")
+
+// Whether a code is one JSON-RPC defines.
+pub fn is_standard_code(code: Int) -> Bool []
+    todo("agent-proto-nv.agperror.is_standard_code")
+
+// The standard message for a standard code, or an empty string.
+pub fn standard_message(code: Int) -> Str []
+    todo("agent-proto-nv.agperror.standard_message")
+
+// ── Between the two vocabularies ─────────────────────────────────────
+
+// The error object a fault should be sent back AS, for a caller that
+// is the server and has to answer.
+//
+// The one place the two vocabularies meet, and it goes in ONE
+// direction: a fault becomes an error object to send, and an error
+// object never becomes a fault. A library that converted both ways
+// would let a peer's ordinary refusal look like a local bug.
+pub fn as_rpc_error(f: AgpFault) -> AgpRpcError []
+    todo("agent-proto-nv.agperror.as_rpc_error")
+
+// Whether the fault means the session cannot continue.
+//
+// True for `AgpVersionRejected` and `AgpWrongState`; false for
+// `AgpUnknownId`, which is dropped, and for the decode faults, which
+// are about one message.
+pub fn is_fatal(f: AgpFault) -> Bool []
+    todo("agent-proto-nv.agperror.is_fatal")
+
+// One line a person can read.
+//
+// ```novo
+// use agperror
+//
+// fn main() [io]
+//     println(agperror.describe(AgpWrongState("tools/list", "connecting")))
+// ```
+pub fn describe(f: AgpFault) -> Str []
+    todo("agent-proto-nv.agperror.describe")
+
+// The `Error` implementation `Result<_, AgpFault>` requires.
+//
+// Required before `Result<_, AgpFault>` type-checks at all
+// (SPEC § 3.4), so this block is part of the interface rather than a
+// convenience on top of it.
+//
+// ```novo
+// use agperror
+//
+// fn main() [io]
+//     let e: AgpFault = AgpAmbiguousMessage
+//     println(e.message())
+// ```
+impl Error for AgpFault
+    fn message(self) -> Str
+        todo("agent-proto-nv.agperror.message")

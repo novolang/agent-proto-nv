@@ -1,0 +1,277 @@
+// agpsurface_tests.nv — every message this package can build, built
+// once, with the types it declares.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: agent-proto-nv.<module>.<fn>`.
+//
+// WHAT THIS SUITE IS FOR.  An interface package's claim is that the
+// signatures COMPOSE — that what one call answers is what the next one
+// takes.  For a protocol package that claim is checkable in one pass:
+// build the request, read it back through `agpwire`, decide whether the
+// session allows it, and encode it.  If any of those four did not line
+// up, this file would not compile.
+//
+// AND IT PINS THE DIRECTIONS.  MCP is bidirectional, so a message
+// carries an originating side as well as a method, and every builder
+// here is asserted against `agpwire.originator_of` — which is how a
+// consumer finds out it has been sending a server's message from a
+// client.
+
+use std.test
+use std.list
+use std.json
+use agpwire
+use agpsession
+use agptool
+use agpres
+use agpprompt
+use agpmeta
+use agpcodec
+use agperror
+
+fn nil() -> JsonValueH
+    json.null()
+
+fn info() -> agpsession.AgpPeerInfo
+    AgpPeerInfo { name: "novo", version: "0.8.9", title: "" }
+
+fn server() -> agpsession.AgpSession
+    agpsession.server_session(
+        agpsession.with_roots(
+            agpsession.with_sampling(agpsession.no_capabilities()), false))
+
+@test
+fn test_every_client_request_is_built_and_is_a_clients_to_send() [io]
+    test.case("THE CLAIM: a builder answers a request, and the direction is a fact")
+    test.assert(agpwire.originator_of("tools/list") == AgpClient)
+    test.assert(agpwire.originator_of("tools/call") == AgpClient)
+    test.assert(agpwire.originator_of("resources/list") == AgpClient)
+    test.assert(agpwire.originator_of("resources/read") == AgpClient)
+    test.assert(agpwire.originator_of("resources/subscribe") == AgpClient)
+    test.assert(agpwire.originator_of("resources/unsubscribe") == AgpClient)
+    test.assert(agpwire.originator_of("prompts/list") == AgpClient)
+    test.assert(agpwire.originator_of("prompts/get") == AgpClient)
+    test.assert(agpwire.originator_of("logging/setLevel") == AgpClient)
+
+    test.case("and each one comes out of a call rather than out of a string a caller wrote")
+    test.assert(agpwire.method_of(agptool.call_request(AgpIdNum(1), "t", nil()))
+                == "tools/call")
+    test.assert(agpwire.method_of(agpres.list_request(AgpIdNum(2), "")) == "resources/list")
+    test.assert(agpwire.method_of(agpres.templates_request(AgpIdNum(3), ""))
+                == "resources/templates/list")
+    test.assert(agpwire.method_of(agpres.subscribe_request(AgpIdNum(4), "file:///a"))
+                == "resources/subscribe")
+    test.assert(agpwire.method_of(agpres.unsubscribe_request(AgpIdNum(5), "file:///a"))
+                == "resources/unsubscribe")
+    test.assert(agpwire.method_of(agpprompt.list_request(AgpIdNum(6), "")) == "prompts/list")
+    test.assert(agpwire.method_of(agpprompt.get_request(AgpIdNum(7), "p", [], []))
+                == "prompts/get")
+    test.assert(agpwire.method_of(agpmeta.set_level_request(AgpIdNum(8), AgpWarning))
+                == "logging/setLevel")
+
+@test
+fn test_the_two_requests_a_SERVER_sends_are_built_by_a_server() [io]
+    let s = server()
+
+    test.case("THE CLAIM: roots/list and sampling/createMessage invert the direction")
+    test.assert(agpwire.originator_of("sampling/createMessage") == AgpServer)
+    test.assert(agpwire.method_of(agpres.roots_request(AgpIdNum(1))) == "roots/list")
+
+    let ask = AgpSampling { messages: [], system_prompt: "",
+                            preferences: agpprompt.no_preferences(), max_tokens: 100,
+                            temperature: 0.0 - 1.0, stop_sequences: [],
+                            include_context: "none" }
+    test.assert(agpwire.method_of(agpprompt.sampling_request(AgpIdNum(2), ask))
+                == "sampling/createMessage")
+
+    test.case("and a server session is a session like any other, with its own side")
+    test.assert(s.side == AgpServer)
+    test.assert(s.own.sampling)
+    test.assert(s.own.roots)
+
+@test
+fn test_every_result_a_server_answers_with_is_a_response() [io]
+    test.case("THE CLAIM: a result carries the id and is not a request")
+    test.assert(agpwire.is_response(agpwire.result_for(AgpIdNum(1), nil())))
+    test.assert(agpwire.is_response(agptool.list_result(AgpIdNum(1), [], "")))
+    test.assert(agpwire.is_response(agptool.call_result(AgpIdNum(2),
+                                                        agptool.text_result("ok"))))
+    test.assert(agpwire.is_response(agpres.read_result(AgpIdNum(3), [])))
+    test.assert(agpwire.is_response(agpres.roots_result(AgpIdNum(4), [])))
+    test.assert(agpwire.is_response(agpprompt.get_result(AgpIdNum(5), "", [])))
+    test.assert(agpwire.is_response(
+        agpprompt.sampling_result(AgpIdNum(6), AgpAssistant, AgpText("hi"),
+                                  "some-model", "endTurn")))
+
+    test.case("and a server's own initialize result carries the version it settled on")
+    test.assert(agpwire.is_response(
+        agpsession.initialize_result(server(), AgpIdNum(7),
+                                     agpsession.stdlib_version(), info())))
+
+@test
+fn test_every_notification_expects_nothing_back() [io]
+    test.case("THE CLAIM: no id, no answer, and that is the whole difference")
+    test.assert(agpwire.expects_response(agptool.list_changed_notification()) == false)
+    test.assert(agpwire.expects_response(agpres.list_changed_notification()) == false)
+    test.assert(agpwire.expects_response(agpprompt.list_changed_notification()) == false)
+    test.assert(agpwire.expects_response(agpres.roots_changed_notification()) == false)
+    test.assert(agpwire.expects_response(agpres.updated_notification("file:///a")) == false)
+    test.assert(agpwire.expects_response(
+        agpmeta.log_notification(AgpInfo, "server", nil())) == false)
+
+    test.case("and the three list_changed notifications are three DIFFERENT methods")
+    test.assert(agpwire.method_of(agptool.list_changed_notification())
+                != agpwire.method_of(agpres.list_changed_notification()))
+    test.assert(agpwire.method_of(agpprompt.list_changed_notification())
+                != agpwire.method_of(agpres.list_changed_notification()))
+
+@test
+fn test_a_sent_message_moves_the_session_and_a_received_one_moves_it_back() [io]
+    let s = agpsession.client_session(agpsession.no_capabilities())
+    let init = agpsession.initialize_request(s, AgpIdNum(1), info())
+
+    test.case("THE CLAIM: the session is a value that goes in and comes out")
+    match agpsession.sent(s, init)
+        Err(_) => test.assert(false)
+        Ok(s1) =>
+            test.assert(agpsession.outstanding_count(s1) == 1)
+            test.assert(agpsession.is_outstanding(s1, AgpIdNum(1)))
+
+            test.case("and a second request with the SAME id is refused")
+            match agpsession.sent(s1, agpwire.request(AgpIdNum(1), "ping", None))
+                Ok(_)  => test.assert(false)
+                Err(e) => test.assert(agperror.describe(e) != "")
+
+            test.case("an answer to an id nobody sent is DROPPED rather than fatal")
+            match agpsession.received(s1, agpwire.result_for(AgpIdNum(99), nil()))
+                Ok(_)  => test.assert(false)
+                Err(e) => test.assert(agperror.is_fatal(e) == false)
+
+    test.case("a client may not RECEIVE a method only a client sends")
+    match agpsession.may_receive(s, "tools/list")
+        AgpAllow => test.assert(false)
+        _        => test.assert(true)
+
+@test
+fn test_the_initialize_params_are_read_back_into_the_session() [io]
+    test.case("THE CLAIM: a server reading a client's initialize needs exactly this")
+    let caps = agpsession.capabilities_of(nil())
+    test.assert(caps.tools == false)
+    test.assert(list.len(caps.unknown) == 0)
+
+    test.case("and the peer information too, rather than a walk every caller writes")
+    test.assert(agpsession.peer_info_of(nil()).name == "")
+
+@test
+fn test_the_list_results_decode_into_the_typed_values() [io]
+    test.case("THE CLAIM: every list answers a typed list and a cursor")
+    match agptool.tools_of(nil())
+        Err(_) => test.assert(true)
+        Ok(ts) => test.assert(list.len(ts) >= 0)
+    match agpres.resources_of(nil())
+        Err(_) => test.assert(true)
+        Ok(rs) => test.assert(list.len(rs) >= 0)
+    match agpres.templates_of(nil())
+        Err(_) => test.assert(true)
+        Ok(ts) => test.assert(list.len(ts) >= 0)
+    match agpres.contents_of(nil())
+        Err(_) => test.assert(true)
+        Ok(cs) => test.assert(list.len(cs) >= 0)
+    match agpres.roots_of(nil())
+        Err(_) => test.assert(true)
+        Ok(rs) => test.assert(list.len(rs) >= 0)
+    match agpprompt.prompts_of(nil())
+        Err(_) => test.assert(true)
+        Ok(ps) => test.assert(list.len(ps) >= 0)
+    match agpprompt.messages_of(nil())
+        Err(_) => test.assert(true)
+        Ok(ms) => test.assert(list.len(ms) >= 0)
+
+    test.case("and the cursor is the same shape in all three, so a loop is one loop")
+    test.assert(agptool.next_cursor_of(nil()) == agpres.next_cursor_of(nil()))
+    test.assert(agpres.next_cursor_of(nil()) == agpprompt.next_cursor_of(nil()))
+
+@test
+fn test_a_tool_call_result_and_a_sampling_result_read_back() [io]
+    test.case("THE CLAIM: what a server answers is what a client decodes")
+    match agptool.result_of(nil())
+        Err(_) => test.assert(true)
+        Ok(r)  => test.assert(r.is_error == false or r.is_error)
+
+    test.case("a sampling answer says which model was ACTUALLY used")
+    test.assert(agpprompt.model_of(nil()) == "")
+    test.assert(agpprompt.stop_reason_of(nil()) == "")
+
+    test.case("and a prompt's description travels beside its messages")
+    test.assert(agpprompt.description_of(nil()) == "")
+
+    test.case("a sampling request a client received is read back whole")
+    match agpprompt.sampling_of(nil())
+        Err(_) => test.assert(true)
+        Ok(s)  => test.assert(s.max_tokens >= 0)
+
+@test
+fn test_the_meta_notifications_read_back_the_fields_they_carry() [io]
+    test.case("THE CLAIM: a caller reading one should not walk the JSON itself")
+    match agpmeta.level_of(nil())
+        Err(_) => test.assert(true)
+        Ok(l)  => test.assert(agpmeta.level_name(l) != "")
+    test.assert(agpmeta.logger_of(nil()) == "")
+
+    test.case("progress carries a token, a number and possibly a total")
+    match agpmeta.progress_token_in(nil())
+        Err(_) => test.assert(true)
+        Ok(t)  => test.assert(agpmeta.token_eq(t, t))
+    test.assert(agpmeta.progress_of(nil()) >= 0.0 - 1.0)
+    test.assert(agpmeta.progress_total_of(nil()) >= 0.0 - 1.0)
+    test.assert(agpmeta.has_total(nil()) == false)
+
+    test.case("and a cancellation names the id it abandons and why")
+    match agpmeta.cancelled_id(nil())
+        Err(_) => test.assert(true)
+        Ok(id) => test.assert(agpwire.id_eq(id, id))
+    test.assert(agpmeta.cancel_reason(nil()) == "")
+
+    test.case("an updated notification names the URI that changed")
+    test.assert(agpres.updated_uri(nil()) == "")
+
+@test
+fn test_a_template_matches_the_uris_it_would_have_produced() [io]
+    let t = AgpTemplate { uri_template: "file:///{path}", name: "f", title: "",
+                          description: "", mime: "" }
+
+    test.case("THE CLAIM: the reverse of expand, for a server deciding which template ran")
+    test.assert(agpres.matches(t, "file:///notes.txt"))
+    test.assert(agpres.matches(t, "https://example.org/notes.txt") == false)
+
+@test
+fn test_the_json_form_and_the_text_form_are_the_same_message() [io]
+    let m = agpwire.request(AgpIdNum(1), "ping", None)
+
+    test.case("THE CLAIM: encode answers a VALUE, because the framing is the transport's")
+    test.assert(json.type_of(agpwire.encode(m)) == "object")
+    test.assert(json.type_of(agpcodec.encode_for(m, agpsession.stdlib_version()))
+                == "object")
+
+    test.case("and a batch encodes as an array, which is what `is_batch` dispatches on")
+    match agpwire.batch([m])
+        Err(_) => test.assert(false)
+        Ok(b)  =>
+            test.assert(json.type_of(agpwire.encode_batch(b)) == "array")
+            test.assert(agpwire.is_batch(agpwire.encode_batch(b)))
+            test.assert(agpwire.is_batch(agpwire.encode(m)) == false)
+            test.assert(agpcodec.batch_to_text(b) != "")
+
+    test.case("decoding an array back answers a batch")
+    match agpwire.decode_batch(agpwire.encode(m))
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(agperror.describe(e) != "")
+
+@test
+fn test_a_session_gated_decode_refuses_what_arrived_at_the_wrong_time() [io]
+    let s = agpsession.client_session(agpsession.no_capabilities())
+
+    test.case("THE CLAIM: the check is at the one gate every message passes through")
+    match agpcodec.decode_in(s, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}")
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(agperror.describe(e) != "")

@@ -1,0 +1,240 @@
+// agpres.nv — resources, templates, prompts and roots: the four things
+// that are addressed by URI.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A RESOURCE IS CONTENT A SERVER OFFERS AND A CLIENT CHOOSES TO READ.
+// That is the difference from a tool: a tool is an ACTION the model
+// asks for, and a resource is DATA the application decides to put in
+// front of it.  The protocol keeps them apart for a reason a library
+// should not blur — a server that exposed files as tools would let a
+// model read anything it could name, and a client that treated
+// resources as tools would be doing exactly that.
+//
+// A TEMPLATE IS A URI WITH HOLES, AND EXPANSION IS A REFUSAL POINT.
+// `file:///{path}` is a resource template, and `expand` is where a
+// caller turns it into a URI.  It answers a `Result`, because a
+// variable the template does not have and a value that would change
+// the URI's STRUCTURE are both mistakes worth catching before a read —
+// the second is the one that matters, since a value containing `..`
+// or a slash in a template that expected a filename is a traversal the
+// template never expressed.
+//
+// ROOTS GO THE OTHER WAY.  A root is the CLIENT telling the SERVER
+// which directories it may work in, which is the one place in MCP
+// where the client is the authority.  They are here rather than in
+// their own module because they are the same shape — a URI and a name
+// — and because a server reading roots and a client reading resources
+// want the same URI helpers.
+
+use agperror
+use agpwire
+
+// One resource a server offers.
+pub struct AgpResource
+    // The URI it is addressed by.  Server-defined: `file://`,
+    // `https://`, or a scheme the server invented.
+    uri: Str
+    // A short name.
+    name: Str
+    // A human-readable title, when the revision has one.
+    title: Str
+    // What it is, in prose, for the model to read.
+    description: Str
+    // Its media type, or an empty string when the server did not say.
+    mime: Str
+    // Its size in bytes, or -1 when the server did not say.
+    //
+    // -1 rather than 0, because 0 is a legal size and a caller
+    // budgeting a context window has to tell "empty" from "unknown".
+    size: Int
+
+// A family of resources addressed by a URI template.
+pub struct AgpTemplate
+    // The template, with `{variable}` holes — RFC 6570 level 1, which
+    // is what MCP uses.
+    uri_template: Str
+    // A short name.
+    name: Str
+    // A human-readable title.
+    title: Str
+    // What the family is.
+    description: Str
+    // The media type every member has, or an empty string.
+    mime: Str
+
+// The content of a resource that was read.
+//
+// Two shapes in one value because the protocol has two — a text
+// resource and a binary one — and a caller that got `Bytes` for both
+// would have decoded base64 it was about to forward.
+pub struct AgpResourceContent
+    // Which URI this is.
+    uri: Str
+    // Its media type.
+    mime: Str
+    // The text, for a text resource; empty otherwise.
+    text: Str
+    // The base64 as the protocol carries it, for a binary resource;
+    // empty otherwise.
+    blob: Str
+
+// A directory the client permits the server to work in.
+pub struct AgpRoot
+    // The URI, which MCP requires to be a `file://` URI today.
+    uri: Str
+    // A name a person reads.
+    name: Str
+
+// ── Resources ────────────────────────────────────────────────────────
+
+// The `resources/list` request.
+pub fn list_request(id: agpwire.AgpId, cursor: Str) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpres.list_request")
+
+// The resources in a `resources/list` result.
+pub fn resources_of(result: JsonValueH) -> Result<[AgpResource], agperror.AgpFault> []
+    todo("agent-proto-nv.agpres.resources_of")
+
+// The next cursor in a list result, or an empty string.
+pub fn next_cursor_of(result: JsonValueH) -> Str []
+    todo("agent-proto-nv.agpres.next_cursor_of")
+
+// The `resources/read` request.
+pub fn read_request(id: agpwire.AgpId, uri: Str) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpres.read_request")
+
+// The contents in a `resources/read` result.
+//
+// A LIST, because one URI may answer several contents — a directory,
+// a document with parts — and a caller that took the first silently
+// dropped the rest.
+pub fn contents_of(result: JsonValueH) -> Result<[AgpResourceContent], agperror.AgpFault> []
+    todo("agent-proto-nv.agpres.contents_of")
+
+// A `resources/read` result a server should answer with.
+pub fn read_result(id: agpwire.AgpId, contents: [AgpResourceContent]) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpres.read_result")
+
+// Whether a content is text rather than binary.
+pub fn is_text(c: AgpResourceContent) -> Bool []
+    todo("agent-proto-nv.agpres.is_text")
+
+// The bytes behind a binary content's base64.
+//
+// The decode, for the caller that wants it; a caller forwarding the
+// content verbatim never pays for it.
+pub fn decode_blob(c: AgpResourceContent) -> ?Bytes []
+    todo("agent-proto-nv.agpres.decode_blob")
+
+// ── Templates ────────────────────────────────────────────────────────
+
+// The `resources/templates/list` request.
+pub fn templates_request(id: agpwire.AgpId, cursor: Str) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpres.templates_request")
+
+// The templates in a templates list result.
+pub fn templates_of(result: JsonValueH) -> Result<[AgpTemplate], agperror.AgpFault> []
+    todo("agent-proto-nv.agpres.templates_of")
+
+// The variable names a template has.
+//
+// What a caller has to supply, read off the template rather than
+// guessed — and what a user interface offering the template needs to
+// ask for.
+pub fn variables_of(t: AgpTemplate) -> [Str] []
+    todo("agent-proto-nv.agpres.variables_of")
+
+// A template expanded into a URI.
+//
+// `AgpBadField` when a variable the template names has no value, and
+// when a value would change the URI's STRUCTURE rather than fill a
+// hole — a value containing a slash, a `?`, a `#` or a `..` segment in
+// a template that expected a filename.
+//
+// THAT SECOND CHECK IS THE POINT.  A template is the server saying
+// "give me a path here", and a caller that pasted `../../etc/passwd`
+// into it has asked for something the template never expressed. The
+// expansion is where it is catchable, and percent-encoding the value —
+// which RFC 6570 level 1 does — is what makes the refusal a rule
+// rather than a judgement.
+pub fn expand(t: AgpTemplate, names: [Str], values: [Str]) -> Result<Str, agperror.AgpFault> []
+    todo("agent-proto-nv.agpres.expand")
+
+// Whether a value is safe to expand into a template variable.
+//
+// The check `expand` makes, published so a user interface can grey out
+// a bad value rather than showing the refusal afterwards.
+pub fn value_is_safe(v: Str) -> Bool []
+    todo("agent-proto-nv.agpres.value_is_safe")
+
+// Whether a URI matches a template.
+//
+// The reverse: for a server deciding which template answered a read,
+// and for a client caching by family.
+pub fn matches(t: AgpTemplate, uri: Str) -> Bool []
+    todo("agent-proto-nv.agpres.matches")
+
+// ── Subscriptions ────────────────────────────────────────────────────
+
+// The `resources/subscribe` request.
+//
+// Gated on the peer's `resources.subscribe` capability, which
+// `agpsession.may_send` checks — a server that did not declare it will
+// answer `-32601`, and asking first is cheaper.
+pub fn subscribe_request(id: agpwire.AgpId, uri: Str) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpres.subscribe_request")
+
+// The `resources/unsubscribe` request.
+pub fn unsubscribe_request(id: agpwire.AgpId, uri: Str) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpres.unsubscribe_request")
+
+// The `notifications/resources/updated` a server sends for a
+// subscribed URI.
+pub fn updated_notification(uri: Str) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpres.updated_notification")
+
+// The URI in an updated notification.
+pub fn updated_uri(params: JsonValueH) -> Str []
+    todo("agent-proto-nv.agpres.updated_uri")
+
+// The `notifications/resources/list_changed`.
+pub fn list_changed_notification() -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpres.list_changed_notification")
+
+// ── Roots ────────────────────────────────────────────────────────────
+
+// The `roots/list` request, which a SERVER sends to a CLIENT.
+//
+// The one place the direction inverts, and `agpwire.originator_of`
+// answers `AgpServer` for it — so a client that sent it has met its
+// own bug rather than a strange server.
+pub fn roots_request(id: agpwire.AgpId) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpres.roots_request")
+
+// The roots in a `roots/list` result.
+pub fn roots_of(result: JsonValueH) -> Result<[AgpRoot], agperror.AgpFault> []
+    todo("agent-proto-nv.agpres.roots_of")
+
+// A `roots/list` result a client should answer with.
+pub fn roots_result(id: agpwire.AgpId, roots: [AgpRoot]) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpres.roots_result")
+
+// The `notifications/roots/list_changed` a client sends.
+pub fn roots_changed_notification() -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpres.roots_changed_notification")
+
+// Whether a URI is inside one of the roots.
+//
+// THE CHECK A SERVER OWES ITS CLIENT.  Roots are the client saying
+// which directories the server may work in, and a server that listed
+// them and then read outside them has ignored the one permission
+// mechanism the protocol has. Published here so the comparison —
+// which is a prefix test on a normalised path, not on a string — is
+// written once.
+pub fn is_within_roots(roots: [AgpRoot], uri: Str) -> Bool []
+    todo("agent-proto-nv.agpres.is_within_roots")
+
+// The root a URI falls under, or nothing.
+pub fn root_of(roots: [AgpRoot], uri: Str) -> ?AgpRoot []
+    todo("agent-proto-nv.agpres.root_of")

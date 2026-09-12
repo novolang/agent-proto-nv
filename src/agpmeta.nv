@@ -1,0 +1,227 @@
+// agpmeta.nv — logging, progress, cancellation and ping: the traffic
+// that is about the conversation rather than in it.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// CANCELLATION IS THE ONE WORTH READING TWICE.  MCP's cancellation is
+// a NOTIFICATION, which means it is advisory and unacknowledged: a
+// client that sends it has no answer coming and no way to know whether
+// the server stopped.  The consequence is a rule people get wrong —
+// the response to a cancelled request MAY STILL ARRIVE, because the
+// server may have sent it before the notification got there, and a
+// client that removed the id from its outstanding set the moment it
+// cancelled then meets an answer it cannot attribute.
+//
+// `agpsession.received` answers `AgpUnknownId` for exactly that, and
+// the right move is to DROP it rather than to fail the session —
+// which is why that fault is `is_fatal` false and why this module says
+// so out loud.
+//
+// PROGRESS IS ALSO A NOTIFICATION AND ALSO NEEDS A TOKEN.  A progress
+// token is carried in the request's `_meta`, not in its params, and a
+// request that did not carry one gets no progress even if the server
+// would have sent some.  `with_progress_token` is where that goes, so
+// a caller does not have to know where the protocol hid it.
+//
+// AND LOGGING RUNS AT A LEVEL THE CLIENT SETS.  Eight levels from
+// syslog, ordered, with `set_level` as the request — so a client that
+// wants nothing sets `emergency` rather than filtering a stream it is
+// still paying to receive.
+
+use agperror
+use agpwire
+
+// How serious a log message is.
+//
+// The eight syslog levels the protocol uses, ordered from least to
+// most serious — and the ORDER is what `level_at_least` is for: a
+// client that set `warning` wants `warning` and everything above it,
+// and a comparison on the names alone would be alphabetical.
+pub enum AgpLogLevel
+    // Verbose detail a developer asked for.
+    AgpDebug
+    // Ordinary operational messages.
+    AgpInfo
+    // Something worth noting.
+    AgpNotice
+    // Something that may become a problem.
+    AgpWarning
+    // Something went wrong.
+    AgpLogError
+    // Something went badly wrong.
+    AgpCritical
+    // Something needs attention now.
+    AgpAlert
+    // The system is unusable.
+    AgpEmergency
+
+// A progress token, which identifies which request a progress
+// notification is about.
+//
+// The same two spellings an id has, and for the same reason: the
+// protocol allows a string or a number and they are not
+// interchangeable.
+pub enum AgpProgressToken
+    // A number.
+    AgpProgNum(n: Int)
+    // A string.
+    AgpProgStr(s: Str)
+
+// ── Logging ──────────────────────────────────────────────────────────
+
+// The `logging/setLevel` request.
+//
+// A client that wants nothing sets `AgpEmergency` rather than
+// filtering a stream it is still paying to receive.
+pub fn set_level_request(id: agpwire.AgpId, level: AgpLogLevel) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpmeta.set_level_request")
+
+// The `notifications/message` a server sends.
+//
+// `logger` is a free-form name the server chose, and `data` is
+// whatever it wanted to say — a string, an object, anything JSON.
+pub fn log_notification(level: AgpLogLevel, logger: Str, data: JsonValueH) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpmeta.log_notification")
+
+// The level of a log notification.
+pub fn level_of(params: JsonValueH) -> Result<AgpLogLevel, agperror.AgpFault> []
+    todo("agent-proto-nv.agpmeta.level_of")
+
+// The logger name of a log notification.
+pub fn logger_of(params: JsonValueH) -> Str []
+    todo("agent-proto-nv.agpmeta.logger_of")
+
+// The protocol's name for a level: `debug`, `info`, `notice`,
+// `warning`, `error`, `critical`, `alert`, `emergency`.
+pub fn level_name(l: AgpLogLevel) -> Str []
+    todo("agent-proto-nv.agpmeta.level_name")
+
+// The level a name spells.
+//
+// `AgpBadField` for a name the protocol does not have, rather than a
+// silent `AgpInfo` — a server logging at a level nobody recognises is
+// a server doing something a client should be told about.
+pub fn level_of_name(name: Str) -> Result<AgpLogLevel, agperror.AgpFault> []
+    todo("agent-proto-nv.agpmeta.level_of_name")
+
+// Whether a level is at least as serious as a threshold.
+//
+// THE COMPARISON THE ORDER EXISTS FOR.  A client that set `warning`
+// wants warning and everything above it, and comparing the NAMES would
+// sort `alert` before `debug` and deliver nothing.
+pub fn level_at_least(l: AgpLogLevel, threshold: AgpLogLevel) -> Bool []
+    todo("agent-proto-nv.agpmeta.level_at_least")
+
+// The eight levels, least serious first.
+//
+// Published as data so a user interface can offer them in order
+// without writing the list again.
+pub fn levels() -> [AgpLogLevel] []
+    todo("agent-proto-nv.agpmeta.levels")
+
+// ── Progress ─────────────────────────────────────────────────────────
+
+// A request with a progress token attached.
+//
+// THE TOKEN GOES IN `_meta`, NOT IN THE PARAMS, and that is where a
+// caller writing it by hand puts it wrong. A request without one gets
+// no progress notifications at all, however long the server takes and
+// however much it would have liked to send some.
+pub fn with_progress_token(m: agpwire.AgpMessage, token: AgpProgressToken) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpmeta.with_progress_token")
+
+// The progress token a request carries, or nothing.
+//
+// For the SERVER, deciding whether to send progress at all.
+pub fn progress_token_of(m: agpwire.AgpMessage) -> ?AgpProgressToken []
+    todo("agent-proto-nv.agpmeta.progress_token_of")
+
+// The `notifications/progress` a server sends.
+//
+// `total` is -1.0 when the server does not know how much there is —
+// which is the common case, and which a caller rendering a bar has to
+// tell from "zero left to do".
+pub fn progress_notification(token: AgpProgressToken, progress: Float, total: Float,
+                             message: Str) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpmeta.progress_notification")
+
+// The token a progress notification is about.
+pub fn progress_token_in(params: JsonValueH) -> Result<AgpProgressToken, agperror.AgpFault> []
+    todo("agent-proto-nv.agpmeta.progress_token_in")
+
+// How far along a progress notification says things are.
+pub fn progress_of(params: JsonValueH) -> Float []
+    todo("agent-proto-nv.agpmeta.progress_of")
+
+// How much there is in total, or -1.0 when the server did not say.
+pub fn progress_total_of(params: JsonValueH) -> Float []
+    todo("agent-proto-nv.agpmeta.progress_total_of")
+
+// Whether a progress notification carries a total at all.
+//
+// Its own predicate because -1.0 and 0.0 are different situations and
+// a caller comparing against 0 would draw a full bar for an unknown
+// one.
+pub fn has_total(params: JsonValueH) -> Bool []
+    todo("agent-proto-nv.agpmeta.has_total")
+
+// Two progress tokens, compared by spelling as well as value.
+//
+// `AgpProgNum(3)` and `AgpProgStr("3")` are different tokens, for the
+// same reason two ids with those spellings are.
+pub fn token_eq(a: AgpProgressToken, b: AgpProgressToken) -> Bool []
+    todo("agent-proto-nv.agpmeta.token_eq")
+
+// ── Cancellation ─────────────────────────────────────────────────────
+
+// The `notifications/cancelled` a caller sends to abandon a request.
+//
+// A NOTIFICATION: unacknowledged, advisory, and with no answer coming.
+pub fn cancel_notification(id: agpwire.AgpId, reason: Str) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpmeta.cancel_notification")
+
+// The request id a cancellation names.
+pub fn cancelled_id(params: JsonValueH) -> Result<agpwire.AgpId, agperror.AgpFault> []
+    todo("agent-proto-nv.agpmeta.cancelled_id")
+
+// The reason a cancellation gave, or an empty string.
+pub fn cancel_reason(params: JsonValueH) -> Str []
+    todo("agent-proto-nv.agpmeta.cancel_reason")
+
+// Whether a response to a cancelled request may still arrive: always
+// true.
+//
+// THE RULE THIS MODULE'S HEADER OPENS WITH, as a value. The server may
+// have answered before the notification reached it, so a client that
+// dropped the id the moment it cancelled meets an answer it cannot
+// attribute — `agpsession.received` calls that `AgpUnknownId` and it
+// is not fatal.
+pub fn response_may_still_arrive() -> Bool []
+    todo("agent-proto-nv.agpmeta.response_may_still_arrive")
+
+// Whether the `initialize` request may be cancelled: false.
+//
+// The one exception the specification makes, and the one a general
+// cancellation path would get wrong: cancelling the handshake leaves a
+// session in a state neither side can name.
+pub fn may_cancel(method: Str) -> Bool []
+    todo("agent-proto-nv.agpmeta.may_cancel")
+
+// ── Ping ─────────────────────────────────────────────────────────────
+
+// The `ping` request, which either side may send.
+//
+// The only request whose answer is an empty object, and the only way
+// to find out whether a transport that has gone quiet is still there —
+// a `core` package cannot time anything, so WHEN to send one is the
+// host's decision and this is the message.
+pub fn ping_request(id: agpwire.AgpId) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpmeta.ping_request")
+
+// The answer to a ping: an empty result.
+pub fn ping_result(id: agpwire.AgpId) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpmeta.ping_result")
+
+// Whether a message is a ping.
+pub fn is_ping(m: agpwire.AgpMessage) -> Bool []
+    todo("agent-proto-nv.agpmeta.is_ping")

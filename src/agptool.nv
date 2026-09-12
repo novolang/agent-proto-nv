@@ -1,0 +1,249 @@
+// agptool.nv — tools: what a server offers, and what a caller may send
+// it.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THIS IS THE MODULE THE ROW EXISTS FOR.  Today `std.mcp` answers a
+// tool catalogue as `[Str]` in which each entry is
+// `"name \t description \t arg[*], arg"` — a serialisation the runtime
+// invented because there was no type to answer — and `orbit/novoagent`
+// recovers the fields by splitting on tabs.  `AgpTool` is the type
+// both sides would share, and the tab format stops existing.
+//
+// A TOOL'S INPUT SCHEMA IS A schema-nv SCHEMA, WHICH IS THE POINT.
+// The reason a tool declares its arguments as JSON Schema is so a
+// caller can CHECK an argument object before it spends a model turn on
+// a call the server will refuse with `-32602`.  `check_arguments`
+// answers schema-nv's own `SchOutput`, so a refusal names the instance
+// location, the schema location and the keyword — which is what an
+// agent needs in order to correct itself, and is exactly what a
+// boolean would throw away.
+//
+// THE RESULT IS CONTENT, AND `isError` IS NOT AN ERROR.  A tool call
+// that fails INSIDE the tool — a command that exited non-zero, a file
+// that was not there — answers a normal JSON-RPC RESULT whose
+// `isError` is true, and that is deliberate in the protocol: the model
+// is supposed to SEE the failure and react to it, which it cannot do
+// if the failure travels as a protocol error.  `AgpToolResult.is_error`
+// carries it and `agperror` has no variant for it, because it is not
+// one.
+
+use schcompile
+use schvalidate
+use scherror
+use agperror
+use agpwire
+
+// One tool a server offers.
+pub struct AgpTool
+    // The name a call uses.  Unique within a server.
+    name: Str
+    // A human-readable title, when the negotiated revision has one;
+    // empty otherwise.
+    title: Str
+    // What the tool does, in prose, for the model to read.
+    //
+    // THE FIELD `list_tools` LOSES.  A model given bare names calls the
+    // wrong one — it has to guess what each identifier means — and the
+    // description is metadata the server already sent.
+    description: Str
+    // The JSON Schema for the arguments, as the server sent it.
+    //
+    // Kept as a document rather than only as a compiled schema,
+    // because it is what a caller renders for a model and what it
+    // would forward to another agent.
+    input_schema: JsonValueH
+    // The JSON Schema for the result, when the revision and the server
+    // provide one; a null value otherwise.
+    output_schema: JsonValueH
+    // Whether the tool only reads.  A hint rather than a guarantee,
+    // and treating it as one is how an agent runs a destructive tool
+    // it was told not to.
+    read_only: Bool
+    // Whether calling the tool twice is the same as calling it once.
+    idempotent: Bool
+    // Whether the tool may modify things outside the conversation.
+    destructive: Bool
+    // Whether the tool reaches the network or anything else outside
+    // the server.
+    open_world: Bool
+
+// What a tool answered.
+pub struct AgpToolResult
+    // The content blocks, in order.
+    content: [AgpContent]
+    // The structured result, when the tool declared an output schema;
+    // a null value otherwise.
+    structured: JsonValueH
+    // Whether the tool itself failed.
+    //
+    // NOT a protocol error, and deliberately so: the model is meant to
+    // see the failure and react. `agperror` has no variant for it.
+    is_error: Bool
+
+// One block of a result, a prompt message or a sampling message.
+//
+// One type for all three because the protocol uses one, and because a
+// caller rendering a tool result and one rendering a prompt want the
+// same `match`.
+pub enum AgpContent
+    // Plain text.
+    AgpText(text: Str)
+    // An image, base64 as the protocol carries it, with its media
+    // type.
+    //
+    // BASE64 AND NOT `Bytes`: the protocol's own encoding, kept as it
+    // arrived. A library that decoded on the way in would have decoded
+    // a 20 MB screenshot a caller was about to forward verbatim, and
+    // `agpcontent.decode_data` is the decode for the caller that wants
+    // it.
+    AgpImage(data: Str, mime: Str)
+    // Audio, the same way.
+    AgpAudio(data: Str, mime: Str)
+    // A resource the server embedded in its answer, by URI, with the
+    // text or data it chose to inline.
+    AgpEmbedded(uri: Str, mime: Str, text: Str)
+    // A link to a resource, without its content.
+    AgpResourceLink(uri: Str, name: Str, mime: Str)
+
+// ── Listing ──────────────────────────────────────────────────────────
+
+// The `tools/list` request.
+//
+// `cursor` is the pagination cursor from a previous page, or an empty
+// string for the first. Pagination is opaque and server-defined: a
+// client that tried to construct one has made a cursor up.
+pub fn list_request(id: agpwire.AgpId, cursor: Str) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agptool.list_request")
+
+// The tools in a `tools/list` result.
+pub fn tools_of(result: JsonValueH) -> Result<[AgpTool], agperror.AgpFault> []
+    todo("agent-proto-nv.agptool.tools_of")
+
+// The next cursor in a `tools/list` result, or an empty string when
+// the list is complete.
+//
+// Published because a client that stopped at the first page silently
+// offers a model a fraction of the tools, which looks like a server
+// with fewer tools rather than like a bug.
+pub fn next_cursor_of(result: JsonValueH) -> Str []
+    todo("agent-proto-nv.agptool.next_cursor_of")
+
+// A `tools/list` result a server should answer with.
+pub fn list_result(id: agpwire.AgpId, tools: [AgpTool], next_cursor: Str) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agptool.list_result")
+
+// The tool of a name, or nothing.
+pub fn find(tools: [AgpTool], name: Str) -> ?AgpTool []
+    todo("agent-proto-nv.agptool.find")
+
+// The names of every tool, for a caller validating a model's choice
+// against the catalogue BEFORE it dispatches.
+//
+// Which is what `orbit/novoagent` does today by splitting tab-separated
+// strings, and is the call that replaces it.
+pub fn names_of(tools: [AgpTool]) -> [Str] []
+    todo("agent-proto-nv.agptool.names_of")
+
+// ── Schemas ──────────────────────────────────────────────────────────
+
+// A tool's input schema, compiled once.
+//
+// Compiled rather than re-read per call: a schema is a document and
+// checking against it needs a `SchSchema`, and an agent calls one tool
+// many times. schema-nv's own fault comes back when the server sent a
+// schema that is not a schema — which happens, and which is the
+// server's bug rather than the caller's.
+pub fn compile_input(t: AgpTool) -> Result<schcompile.SchSchema, scherror.SchFault> []
+    todo("agent-proto-nv.agptool.compile_input")
+
+// Whether an argument object matches a tool's input schema.
+//
+// THE CALL THAT SAVES A ROUND TRIP AND A MODEL TURN.  Answers
+// schema-nv's own output, so a refusal names the instance location,
+// the schema location and the keyword — which is what an agent needs
+// to correct itself. A boolean here would be a boolean the caller has
+// to turn back into a sentence for the model.
+pub fn check_arguments(s: schcompile.SchSchema, arguments: JsonValueH) -> schvalidate.SchOutput []
+    todo("agent-proto-nv.agptool.check_arguments")
+
+// The `AgpArgumentsInvalid` a failed check should become, for a caller
+// that would rather propagate than render.
+pub fn arguments_fault(tool: Str, out: schvalidate.SchOutput) -> ?agperror.AgpFault []
+    todo("agent-proto-nv.agptool.arguments_fault")
+
+// The names of a tool's required arguments.
+//
+// Read off the schema's `required` array. Published because it is what
+// a catalogue rendered for a model needs to mark, and because a caller
+// that walked the schema itself would be writing schema-nv's job
+// again.
+pub fn required_arguments(t: AgpTool) -> [Str] []
+    todo("agent-proto-nv.agptool.required_arguments")
+
+// The names of every argument a tool accepts.
+pub fn argument_names(t: AgpTool) -> [Str] []
+    todo("agent-proto-nv.agptool.argument_names")
+
+// ── Calling ──────────────────────────────────────────────────────────
+
+// The `tools/call` request.
+pub fn call_request(id: agpwire.AgpId, name: Str, arguments: JsonValueH) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agptool.call_request")
+
+// The result in a `tools/call` answer.
+pub fn result_of(result: JsonValueH) -> Result<AgpToolResult, agperror.AgpFault> []
+    todo("agent-proto-nv.agptool.result_of")
+
+// A `tools/call` result a server should answer with.
+pub fn call_result(id: agpwire.AgpId, r: AgpToolResult) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agptool.call_result")
+
+// A result carrying one block of text.
+//
+// The shape most tools answer, written short.
+pub fn text_result(text: Str) -> AgpToolResult []
+    todo("agent-proto-nv.agptool.text_result")
+
+// A result carrying one block of text and marked as the tool's own
+// failure.
+//
+// Its own constructor because `is_error` is a field a caller forgets,
+// and a tool that failed and answered `text_result` has told the model
+// it succeeded.
+pub fn error_result(text: Str) -> AgpToolResult []
+    todo("agent-proto-nv.agptool.error_result")
+
+// ── Content ──────────────────────────────────────────────────────────
+
+// The text of every text block, joined with newlines.
+//
+// What a model is actually shown, and the call every consumer writes
+// otherwise. Non-text blocks are skipped — `content_kinds` is how a
+// caller sees that something was skipped.
+pub fn text_of(r: AgpToolResult) -> Str []
+    todo("agent-proto-nv.agptool.text_of")
+
+// The kinds of block a result carries, as names.
+//
+// `text`, `image`, `audio`, `resource`, `resource_link`. For a caller
+// deciding whether `text_of` lost anything.
+pub fn content_kinds(r: AgpToolResult) -> [Str] []
+    todo("agent-proto-nv.agptool.content_kinds")
+
+// Whether a result carries anything that is not text.
+pub fn has_non_text(r: AgpToolResult) -> Bool []
+    todo("agent-proto-nv.agptool.has_non_text")
+
+// The bytes behind an image or audio block's base64.
+//
+// The decode, for the caller that wants it; the protocol's own base64
+// is what the block carries, so a caller forwarding a result verbatim
+// never pays for it.
+pub fn decode_data(c: AgpContent) -> ?Bytes []
+    todo("agent-proto-nv.agptool.decode_data")
+
+// The `notifications/tools/list_changed` a server sends when its
+// catalogue changes.
+pub fn list_changed_notification() -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agptool.list_changed_notification")

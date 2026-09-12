@@ -1,0 +1,245 @@
+// agpwire.nv — JSON-RPC 2.0, which is the envelope MCP puts everything
+// in.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THREE MESSAGE SHAPES AND A BATCH, AND THE THIRD IS THE ONE THAT
+// MATTERS.  A request has an id and expects an answer.  A response
+// carries that id and either a result or an error, never both.  A
+// NOTIFICATION has no id and expects nothing — and that is not a
+// detail: sending a notification where a request belongs means waiting
+// forever for an answer that was never going to come, and sending a
+// request where a notification belongs leaves an id outstanding that
+// the peer will never close.  `AgpMessage` makes the two different
+// values, so the mistake is a type error rather than a hang.
+//
+// AN ID IS A STRING OR A NUMBER AND MAY NOT BE NULL.  JSON-RPC allows
+// both spellings and forbids the third; `AgpId` carries which, because
+// a peer that answered `"3"` to a request that asked as `3` has
+// answered a different request and a library that normalised both to a
+// string would never notice.
+//
+// BATCHES ARE HERE AND ARE FENCED.  JSON-RPC allows an array of
+// messages; an empty array is invalid, and a batch containing only
+// notifications gets NO response at all — which is the case that makes
+// a caller waiting on a batch hang.  `batch_expects_response` answers
+// that before anything is sent.
+
+use agperror
+
+// A request or response identifier.
+//
+// Two variants because JSON-RPC has two spellings and they are not
+// interchangeable on the wire: an answer to `3` is not an answer to
+// `"3"`, and a library that normalised them would match a response to
+// the wrong request in a session that used both.
+pub enum AgpId
+    // A number, which is what most implementations emit.
+    AgpIdNum(n: Int)
+    // A string, which is what a client that wants globally unique ids
+    // emits.
+    AgpIdStr(s: Str)
+
+// One JSON-RPC message.
+//
+// The type the whole protocol travels in.  Four variants rather than
+// one struct with optional fields, because "has an id and a result"
+// and "has a method and no id" are different things and an optional
+// field would let a caller build a message that is neither.
+pub enum AgpMessage
+    // A call that expects an answer.
+    AgpRequest(id: AgpId, method: Str, params: ?JsonValueH)
+    // An answer that succeeded.
+    AgpResult(id: AgpId, result: JsonValueH)
+    // An answer that failed.  Carries the PEER's error, which is a
+    // normal part of the conversation — see `agperror`'s header.
+    AgpError(id: AgpId, error: agperror.AgpRpcError)
+    // A message that expects nothing back.
+    //
+    // No id, deliberately and by the specification: a notification
+    // with an id is a request, and the difference is the whole
+    // question of whether the sender waits.
+    AgpNotification(method: Str, params: ?JsonValueH)
+
+// The protocol version string JSON-RPC requires on every message:
+// `"2.0"`.
+//
+// A function rather than a literal at four call sites, and asserted by
+// the test suite, because a message with a missing or wrong `jsonrpc`
+// is rejected by every conformant peer and the failure looks like a
+// transport problem.
+pub fn jsonrpc_version() -> Str []
+    todo("agent-proto-nv.agpwire.jsonrpc_version")
+
+// ── Building ─────────────────────────────────────────────────────────
+
+// A request.
+pub fn request(id: AgpId, method: Str, params: ?JsonValueH) -> AgpMessage []
+    todo("agent-proto-nv.agpwire.request")
+
+// A successful answer to a request.
+pub fn result_for(id: AgpId, result: JsonValueH) -> AgpMessage []
+    todo("agent-proto-nv.agpwire.result_for")
+
+// A failed answer to a request.
+pub fn error_for(id: AgpId, e: agperror.AgpRpcError) -> AgpMessage []
+    todo("agent-proto-nv.agpwire.error_for")
+
+// A notification.
+pub fn notification(method: Str, params: ?JsonValueH) -> AgpMessage []
+    todo("agent-proto-nv.agpwire.notification")
+
+// ── Reading ──────────────────────────────────────────────────────────
+
+// The message's id, or nothing for a notification.
+pub fn id_of(m: AgpMessage) -> ?AgpId []
+    todo("agent-proto-nv.agpwire.id_of")
+
+// The message's method, or an empty string for a response.
+pub fn method_of(m: AgpMessage) -> Str []
+    todo("agent-proto-nv.agpwire.method_of")
+
+// Whether the message expects an answer.
+//
+// True only for `AgpRequest`.  The predicate a sender checks before it
+// decides to wait, and the one that turns "my client hangs" into a
+// line it can assert.
+pub fn expects_response(m: AgpMessage) -> Bool []
+    todo("agent-proto-nv.agpwire.expects_response")
+
+// Whether the message IS an answer.
+pub fn is_response(m: AgpMessage) -> Bool []
+    todo("agent-proto-nv.agpwire.is_response")
+
+// Two ids, compared by their SPELLING as well as their value.
+//
+// `AgpIdNum(3)` and `AgpIdStr("3")` are DIFFERENT ids.  Published
+// because a caller matching a response to a pending request is doing
+// exactly this comparison, and a `==` that coerced would match the
+// wrong one in a session that used both spellings.
+pub fn id_eq(a: AgpId, b: AgpId) -> Bool []
+    todo("agent-proto-nv.agpwire.id_eq")
+
+// An id as text, for a log line or a map key.
+//
+// Number ids and string ids that print the same are still different
+// ids; this is for reading, not for comparing, and `id_eq` is the
+// comparison.
+pub fn id_text(i: AgpId) -> Str []
+    todo("agent-proto-nv.agpwire.id_text")
+
+// ── Encoding and decoding ────────────────────────────────────────────
+
+// A message as a JSON value.
+//
+// The value rather than a string, because the framing — a line, a
+// `Content-Length` header, an SSE `data:` field — is the transport's
+// and this package has none.  `agpcodec.to_text` is the convenience
+// that serialises it.
+pub fn encode(m: AgpMessage) -> JsonValueH []
+    todo("agent-proto-nv.agpwire.encode")
+
+// A JSON value as a message.
+//
+// `AgpNotJsonRpc` when `jsonrpc` is missing or is not `"2.0"`;
+// `AgpAmbiguousMessage` for an object with both `result` and `error`,
+// or with neither and no `method` — the shape the specification
+// forbids and every implementation eventually emits by accident.
+pub fn decode(v: JsonValueH) -> Result<AgpMessage, agperror.AgpFault> []
+    todo("agent-proto-nv.agpwire.decode")
+
+// ── Batches ──────────────────────────────────────────────────────────
+
+// Several messages sent as one array.
+//
+// A struct rather than a bare list because a batch has properties the
+// list does not carry — whether it expects an answer at all, and
+// whether it is legal — and a caller that had only the list would
+// re-derive both.
+pub struct AgpBatch
+    // The messages, in the order they were written.  A peer may answer
+    // them in any order, which is why every one of them carries an id.
+    messages: [AgpMessage]
+
+// A batch.
+//
+// `AgpBadBatch` for an empty one, which JSON-RPC forbids and which a
+// peer answers with a single error rather than an empty array.
+pub fn batch(messages: [AgpMessage]) -> Result<AgpBatch, agperror.AgpFault> []
+    todo("agent-proto-nv.agpwire.batch")
+
+// Whether a batch expects a response at all.
+//
+// FALSE when every message in it is a notification — and that is the
+// case a caller waiting on a batch hangs on, because the specification
+// says the peer sends NOTHING back rather than an empty array.
+// Published so the wait is a decision rather than a default.
+pub fn batch_expects_response(b: AgpBatch) -> Bool []
+    todo("agent-proto-nv.agpwire.batch_expects_response")
+
+// How many answers a batch expects.
+//
+// The number a caller collecting responses counts down from, which is
+// not the message count whenever notifications are mixed in.
+pub fn batch_response_count(b: AgpBatch) -> Int []
+    todo("agent-proto-nv.agpwire.batch_response_count")
+
+// A batch as a JSON array.
+pub fn encode_batch(b: AgpBatch) -> JsonValueH []
+    todo("agent-proto-nv.agpwire.encode_batch")
+
+// A JSON array as a batch.
+pub fn decode_batch(v: JsonValueH) -> Result<AgpBatch, agperror.AgpFault> []
+    todo("agent-proto-nv.agpwire.decode_batch")
+
+// Whether a JSON value is a batch rather than a single message.
+//
+// The dispatch a receiver makes first: an array is a batch, an object
+// is a message, anything else is `AgpNotJsonRpc`.
+pub fn is_batch(v: JsonValueH) -> Bool []
+    todo("agent-proto-nv.agpwire.is_batch")
+
+// ── Methods ──────────────────────────────────────────────────────────
+
+// Every method name this package knows.
+//
+// Published as data so a server can answer `-32601` for everything
+// else without writing the list a second time, and so a test can
+// compare it against the schema revision it claims to implement.
+pub fn known_methods() -> [Str] []
+    todo("agent-proto-nv.agpwire.known_methods")
+
+// Whether a method is one this package knows.
+//
+// A method it does not know is NOT an error: MCP is extensible and a
+// peer may send anything. This is how a caller tells an extension from
+// a typo before it decides which.
+pub fn is_known_method(method: Str) -> Bool []
+    todo("agent-proto-nv.agpwire.is_known_method")
+
+// Whether a method is sent as a notification rather than a request.
+//
+// `notifications/*` by name, and the list is published because getting
+// it wrong is the hang this module's header opens with.
+pub fn is_notification_method(method: Str) -> Bool []
+    todo("agent-proto-nv.agpwire.is_notification_method")
+
+// Which side of the connection may originate a method.
+//
+// MCP is BIDIRECTIONAL — a server may ask a client to sample from a
+// model, and a client answers — so "who sends this" is a fact about
+// each method rather than about the connection. A client that received
+// `tools/list` has met a peer doing something wrong, and a client that
+// SENT `sampling/createMessage` is doing something wrong itself.
+pub fn originator_of(method: Str) -> AgpSide []
+    todo("agent-proto-nv.agpwire.originator_of")
+
+// Which end of an MCP connection a message came from.
+pub enum AgpSide
+    // The side that connects and calls tools.
+    AgpClient
+    // The side that offers tools, resources and prompts.
+    AgpServer
+    // Either: `ping`, `$/cancel` and the progress notification are
+    // symmetric.
+    AgpEitherSide

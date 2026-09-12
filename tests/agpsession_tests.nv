@@ -1,0 +1,183 @@
+// agpsession_tests.nv — the ordering rule, which is the one no message
+// type shows.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: agent-proto-nv.<module>.<fn>`.
+//
+// THE ASSERTION THIS SUITE EXISTS FOR: `tools/list` before
+// `initialize` is a well-formed JSON-RPC request with a valid method
+// and valid params, and it is WRONG.  A library whose whole surface is
+// message types cannot say so; this one says so before a byte reaches
+// a socket, and says WHICH of the two kinds of wrong it is — not yet,
+// or never offered.
+//
+// THE SECOND: the version the standard library speaks is a fact this
+// package asserts rather than assumes.  `compiler/stdlib/mcp.nv` and
+// `compiler/mcp/` both send `"2024-11-05"`, and the day one of them
+// moves, this test fails until the other does.
+
+use std.test
+use std.list
+use agpsession
+use agpwire
+use agperror
+
+fn client() -> agpsession.AgpSession
+    agpsession.client_session(agpsession.no_capabilities())
+
+fn full_server_caps() -> agpsession.AgpCapabilities
+    agpsession.with_logging(
+        agpsession.with_prompts(
+            agpsession.with_resources(
+                agpsession.with_tools(agpsession.no_capabilities(), true),
+                true, true),
+            true))
+
+@test
+fn test_a_well_formed_call_at_the_wrong_moment_is_refused_by_name() [io]
+    let s = client()
+
+    test.case("THE CLAIM: a fresh session may send initialize and nothing else")
+    test.assert(agpsession.may_send(s, "initialize") == AgpAllow)
+
+    test.case("and tools/list before the handshake is NOT YET rather than never")
+    match agpsession.may_send(s, "tools/list")
+        AgpNotYet(state) => test.assert(state != "")
+        _                => test.assert(false)
+
+    test.case("which is a different answer from a capability the peer does not have")
+    test.assert(agpsession.is_ready(s) == false)
+    test.assert(list.len(agpsession.allowed_methods(s)) >= 1)
+
+@test
+fn test_the_two_refusals_lead_a_caller_to_opposite_actions() [io]
+    let with_tools = agpsession.with_tools(agpsession.no_capabilities(), false)
+    let ready = AgpSession { side: AgpClient, state: AgpReady, version: "2024-11-05",
+                             peer: with_tools, peer_info: AgpPeerInfo { name: "s",
+                             version: "1", title: "" },
+                             own: agpsession.no_capabilities(), outstanding: [] }
+
+    test.case("THE CLAIM: a peer that offers tools may be asked for them")
+    test.assert(agpsession.may_send(ready, "tools/list") == AgpAllow)
+
+    test.case("and one that does not is NOT OFFERED, which means stop asking")
+    match agpsession.may_send(ready, "prompts/list")
+        AgpNotOffered(cap) => test.assert(cap != "")
+        _                  => test.assert(false)
+
+    test.case("a server that offers everything answers AgpAllow to all four")
+    let all = AgpSession { side: AgpClient, state: AgpReady, version: "2024-11-05",
+                           peer: full_server_caps(),
+                           peer_info: AgpPeerInfo { name: "s", version: "1", title: "" },
+                           own: agpsession.no_capabilities(), outstanding: [] }
+    test.assert(agpsession.may_send(all, "tools/list") == AgpAllow)
+    test.assert(agpsession.may_send(all, "resources/list") == AgpAllow)
+    test.assert(agpsession.may_send(all, "prompts/list") == AgpAllow)
+    test.assert(agpsession.may_send(all, "logging/setLevel") == AgpAllow)
+
+@test
+fn test_the_notification_a_client_skips_has_a_state_of_its_own() [io]
+    let mid = AgpSession { side: AgpClient, state: AgpInitialized, version: "2024-11-05",
+                           peer: full_server_caps(),
+                           peer_info: AgpPeerInfo { name: "s", version: "1", title: "" },
+                           own: agpsession.no_capabilities(), outstanding: [] }
+
+    test.case("THE CLAIM: the handshake is not over when the result arrives")
+    test.assert(agpsession.handshake_incomplete(mid))
+    test.assert(agpsession.is_ready(mid) == false)
+
+    test.case("so a session that looks connected and receives nothing has a NAME for why")
+    test.assert(agpsession.state_name(AgpInitialized) != agpsession.state_name(AgpReady))
+
+    test.case("and the notification the client owes is its own call")
+    test.assert(agpwire.expects_response(agpsession.initialized_notification()) == false)
+    test.assert(agpwire.method_of(agpsession.initialized_notification())
+                == "notifications/initialized")
+
+@test
+fn test_nothing_may_be_sent_after_a_shutdown() [io]
+    let ready = AgpSession { side: AgpClient, state: AgpReady, version: "2024-11-05",
+                             peer: full_server_caps(),
+                             peer_info: AgpPeerInfo { name: "s", version: "1", title: "" },
+                             own: agpsession.no_capabilities(), outstanding: [] }
+
+    test.case("THE CLAIM: closing refuses new traffic and closed refuses everything")
+    match agpsession.may_send(agpsession.closing(ready), "tools/list")
+        AgpNotYet(_) => test.assert(true)
+        _            => test.assert(false)
+
+    test.assert(list.len(agpsession.allowed_methods(agpsession.closed(ready))) == 0)
+
+    test.case("and a wrong-state fault is FATAL, unlike an unknown id")
+    test.assert(agperror.is_fatal(AgpWrongState("tools/list", "closed")))
+    test.assert(agperror.is_fatal(AgpUnknownId("7")) == false)
+
+@test
+fn test_the_version_the_standard_library_speaks_is_asserted_and_not_assumed() [io]
+    test.case("THE CLAIM: compiler/stdlib/mcp.nv and compiler/mcp/ both send this one")
+    test.assert(agpsession.stdlib_version() == "2024-11-05")
+
+    test.case("and this package implements it")
+    test.assert(agpsession.supports_version(agpsession.stdlib_version()))
+
+    test.case("the supported list is newest first, so the head is what a client proposes")
+    let vs = agpsession.versions_supported()
+    test.assert(list.len(vs) >= 1)
+    test.assert(vs[0] == agpsession.latest_version())
+
+    test.case("a revision this package does not implement is refused by name")
+    test.assert(agpsession.supports_version("1999-01-01") == false)
+
+@test
+fn test_negotiation_has_three_outcomes_and_the_third_is_a_disconnect() [io]
+    let latest = agpsession.latest_version()
+    let stdlib = agpsession.stdlib_version()
+
+    test.case("THE CLAIM: a server that agrees answers what was proposed")
+    match agpsession.negotiate(latest, latest)
+        Ok(v)  => test.assert(v == latest)
+        Err(_) => test.assert(false)
+
+    test.case("a server that offers an OLDER version this package speaks is accepted")
+    match agpsession.negotiate(latest, stdlib)
+        Ok(v)  => test.assert(v == stdlib)
+        Err(_) => test.assert(false)
+
+    test.case("and one this package cannot speak is AgpVersionRejected carrying BOTH")
+    match agpsession.negotiate(latest, "1999-01-01")
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            test.assert(agperror.is_fatal(e))
+            test.assert(agperror.describe(e) != "")
+
+@test
+fn test_a_method_a_revision_does_not_have_is_a_local_check() [io]
+    test.case("THE CLAIM: asking beats a round trip that answers -32601")
+    test.assert(agpsession.method_in_version("tools/list",
+                                             agpsession.stdlib_version()))
+    test.assert(agpsession.method_in_version("initialize",
+                                             agpsession.stdlib_version()))
+
+    test.case("and a method no revision has is false at every one of them")
+    test.assert(agpsession.method_in_version("tools/invent",
+                                             agpsession.latest_version()) == false)
+
+@test
+fn test_the_capabilities_are_named_fields_rather_than_a_list_of_strings() [io]
+    let c = full_server_caps()
+
+    test.case("THE CLAIM: a typo in a string is a capability silently absent")
+    test.assert(c.tools)
+    test.assert(c.prompts)
+    test.assert(c.sampling == false)
+
+    test.case("so the string form is a bridge FROM std.mcp's [Str], not the representation")
+    test.assert(agpsession.has_capability(c, "tools"))
+    test.assert(agpsession.has_capability(c, "tool") == false)
+    test.assert(agpsession.has_capability(c, "sampling") == false)
+
+    test.case("and the names come back out for a log line")
+    test.assert(list.len(agpsession.capability_names(c)) >= 4)
+
+    test.case("a capability a newer peer declared is KEPT rather than dropped")
+    test.assert(list.len(c.unknown) == 0)

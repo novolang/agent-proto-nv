@@ -1,0 +1,151 @@
+// agpcodec.nv — text in, messages out, with the negotiated version
+// decided before anything is read.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHY DECODING TAKES A VERSION.  The same method name carries
+// different fields at different protocol revisions: a field that was
+// added later is absent in an older peer's message and a field that
+// was renamed is present under both names during the overlap.  A
+// decoder that ignored the negotiated version would silently produce a
+// value with empty fields for the older case, which reads as "the
+// server did not set it" rather than "this revision has no such
+// thing".
+//
+// So `decode_for` takes the version the session agreed and
+// `agpsession.method_in_version` is the check that goes with it.
+//
+// FRAMING IS NOT HERE, AND THAT IS THE LAYER LINE.  stdio delimits
+// messages with newlines, streamable HTTP with a body, SSE with
+// `data:` fields.  Three framings, one message format — and a `core`
+// package that owned one of them would be a package the other two
+// transports could not use.  `to_text` and `of_text` are the
+// serialisation either side of the frame, and the frame itself is the
+// host's.
+//
+// THE ONE THING THIS MODULE PROMISES ABOUT TEXT: a message encoded and
+// decoded again is the same message.  Not the same BYTES — key order
+// is not preserved and nothing here claims it is — the same VALUE,
+// which is what a test can assert and what a caller forwarding a
+// message between two connections depends on.
+
+use std.json
+use agperror
+use agpwire
+use agpsession
+
+// A message as JSON text.
+//
+// No framing: no newline, no `Content-Length`, no `data:` prefix.
+// Those belong to the transport, and adding one here would pick a
+// transport for the caller.
+pub fn to_text(m: agpwire.AgpMessage) -> Str []
+    todo("agent-proto-nv.agpcodec.to_text")
+
+// A message from JSON text.
+//
+// `AgpNotJsonRpc` when the text is not JSON at all, which is the case
+// a framing bug produces — two messages concatenated, or half of one.
+pub fn of_text(text: Str) -> Result<agpwire.AgpMessage, agperror.AgpFault> []
+    todo("agent-proto-nv.agpcodec.of_text")
+
+// A batch as JSON text.
+pub fn batch_to_text(b: agpwire.AgpBatch) -> Str []
+    todo("agent-proto-nv.agpcodec.batch_to_text")
+
+// A batch or a single message from JSON text.
+//
+// The receiver's first call: an array is a batch, an object is a
+// message. Answers a batch either way, with one message in it for the
+// single case, so the caller's loop is one loop.
+pub fn any_of_text(text: Str) -> Result<agpwire.AgpBatch, agperror.AgpFault> []
+    todo("agent-proto-nv.agpcodec.any_of_text")
+
+// ── Version-aware decoding ───────────────────────────────────────────
+
+// A message decoded for a negotiated revision.
+//
+// `AgpUnknownMethod` when the method does not exist at that revision —
+// which is a REAL answer and not a pedantry: a peer sending a method
+// from a later revision than it agreed to is doing something the
+// caller should see rather than half-understand.
+pub fn decode_for(v: JsonValueH, version: Str) -> Result<agpwire.AgpMessage, agperror.AgpFault> []
+    todo("agent-proto-nv.agpcodec.decode_for")
+
+// A message encoded for a negotiated revision.
+//
+// Fields a revision does not have are left out rather than sent as
+// null, because a peer at that revision would refuse the message
+// otherwise.
+pub fn encode_for(m: agpwire.AgpMessage, version: Str) -> JsonValueH []
+    todo("agent-proto-nv.agpcodec.encode_for")
+
+// A message decoded against a session, which knows its own version.
+//
+// The call a driven connection makes, and the one that also checks
+// `agpsession.may_receive` — so a message that is well-formed and
+// arrived at the wrong time is refused here rather than three layers
+// up where the state is no longer in scope.
+pub fn decode_in(s: agpsession.AgpSession,
+                 text: Str) -> Result<agpwire.AgpMessage, agperror.AgpFault> []
+    todo("agent-proto-nv.agpcodec.decode_in")
+
+// A message encoded against a session.
+//
+// Checks `agpsession.may_send` first, so the session's ordering rule
+// is enforced at the one place every outgoing message passes through
+// rather than only where a caller remembered to ask.
+pub fn encode_in(s: agpsession.AgpSession,
+                 m: agpwire.AgpMessage) -> Result<Str, agperror.AgpFault> []
+    todo("agent-proto-nv.agpcodec.encode_in")
+
+// ── Round trips ──────────────────────────────────────────────────────
+
+// Whether encoding a message and decoding it again gives the same
+// message.
+//
+// The property the test suite asserts, published so a caller adding a
+// message type of its own can assert the same thing. NOT byte
+// equality: key order is not preserved and nothing here claims it is.
+pub fn round_trips(m: agpwire.AgpMessage) -> Bool []
+    todo("agent-proto-nv.agpcodec.round_trips")
+
+// Whether two messages are the same value.
+//
+// Published because `==` on a struct holding a `JsonValueH` compares
+// the handle rather than the document, which is the comparison a test
+// wants least.
+pub fn message_eq(a: agpwire.AgpMessage, b: agpwire.AgpMessage) -> Bool []
+    todo("agent-proto-nv.agpcodec.message_eq")
+
+// ── What the standard library's JSON cannot do ───────────────────────
+
+// Whether the JSON value behind this package can distinguish `{}` from
+// `null`: TRUE, through `json.type_of`.
+//
+// A FUNCTION BECAUSE THE ANSWER CHANGED.  It is the `type` keyword's
+// whole job in a schema, and for a while it could not be done: every
+// `get_*` and `to_*` on `std.json` is an extractor that answers `None`
+// both for "this is of another kind" and for "this is null", and
+// `keys` answers `[]` for an empty object AND for a null.  schema-nv
+// 0.0.1's manifest records exactly that as its known limitation.
+//
+// `json.type_of` and `json.is_null` have since landed and answer it
+// — which means schema-nv's note is now STALE and this package does
+// not inherit the limitation after all.  Asserting the fact rather
+// than repeating the paragraph is what made the difference visible,
+// and it is why the answer lives in a function that a test compares
+// against `json.type_of`'s own behaviour.
+pub fn distinguishes_empty_object_from_null() -> Bool []
+    todo("agent-proto-nv.agpcodec.distinguishes_empty_object_from_null")
+
+// Whether a JSON number survives the round trip exactly at this
+// magnitude.
+//
+// The other inherited limit, and the one an id trips over: a JSON-RPC
+// id may be any number, `std.json` carries numbers as the runtime
+// does, and a client that used a 64-bit id would find responses it
+// cannot match. `agpwire.AgpIdStr` is the answer for a caller that
+// needs large unique ids, and this is how it finds out it needs one.
+pub fn number_is_exact(n: Int) -> Bool []
+    todo("agent-proto-nv.agpcodec.number_is_exact")

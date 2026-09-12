@@ -1,0 +1,247 @@
+// agpprompt.nv — prompts and sampling: the two places a model appears
+// in the protocol, going opposite ways.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A PROMPT IS A TEMPLATE THE USER CHOOSES.  Not something a model
+// invokes: MCP's prompts are meant to be surfaced as user-visible
+// commands — a slash command, a menu item — and the distinction is a
+// security one rather than a stylistic one.  A tool is something the
+// model may decide to call; a prompt is something a person decided to
+// run.  A client that offered prompts to a model as if they were tools
+// would have handed it a set of actions the user never chose.
+//
+// SAMPLING GOES THE OTHER WAY, AND IT IS THE SURPRISING DIRECTION.
+// `sampling/createMessage` is a SERVER asking a CLIENT to run a model
+// — so a server can summarise, classify or decide without having an
+// API key of its own, and the client's user stays in control of which
+// model and whether it happens at all.  Every field of the request is
+// a PREFERENCE, not an instruction, and the naming here says so:
+// `model_hints`, `AgpModelPreferences`.  A client that treated them as
+// requirements would be letting a server pick the model it pays for.
+//
+// AND THE HUMAN IS IN THE LOOP BY DESIGN.  The specification says a
+// client SHOULD show the user a sampling request before it runs and
+// the result before it goes back.  `requires_approval` is that as a
+// value, so a client that skips it has skipped something named rather
+// than something nobody wrote down.
+
+use agperror
+use agptool
+use agpwire
+
+// Who said something.
+pub enum AgpRole
+    // The person, or the server standing in for them.
+    AgpUser
+    // The model.
+    AgpAssistant
+
+// One turn of a prompt or a sampling conversation.
+//
+// `AgpTurn` rather than a second `Message`, because `agpwire` already
+// owns that word for a JSON-RPC envelope and two types called some
+// spelling of "message" in one package is how a caller ends up passing
+// a protocol frame where a conversation line belongs.
+pub struct AgpTurn
+    // Who said it.
+    role: AgpRole
+    // What was said.  The same content type a tool result carries,
+    // because the protocol uses one.
+    content: agptool.AgpContent
+
+// One prompt a server offers.
+pub struct AgpPrompt
+    // The name a `prompts/get` uses.
+    name: Str
+    // A human-readable title.
+    title: Str
+    // What it is for.
+    description: Str
+    // The arguments it takes.
+    arguments: [AgpPromptArg]
+
+// One argument of a prompt.
+//
+// NOT a JSON Schema, unlike a tool's: a prompt argument is a name, a
+// description and whether it is required, and the protocol says so.
+// A library that reached for schema-nv here would be adding a
+// requirement the protocol does not have.
+pub struct AgpPromptArg
+    // Its name.
+    name: Str
+    // A human-readable title.
+    title: Str
+    // What it is for, shown to the person filling it in.
+    description: Str
+    // Whether it must be supplied.
+    required: Bool
+
+// What a server wants from the model a client will run.
+//
+// Every field is a PREFERENCE.  A client weighs them against what it
+// has, what it costs and what its user allows, and it is entitled to
+// ignore all of them.
+pub struct AgpModelPreferences
+    // Substrings of model names the server would prefer, in order.
+    //
+    // Hints rather than names, deliberately: a server that named
+    // `gpt-4o` would be unusable by a client with a different
+    // provider, and the protocol's own examples are `"claude-3"` and
+    // `"sonnet"`.
+    model_hints: [Str]
+    // How much the server cares about cost, `0.0 ..= 1.0`.
+    cost_priority: Float
+    // How much it cares about latency.
+    speed_priority: Float
+    // How much it cares about quality.
+    intelligence_priority: Float
+
+// A request for the client to run a model.
+pub struct AgpSampling
+    // The conversation so far.
+    messages: [AgpTurn]
+    // A system prompt the server would like used, or an empty string.
+    system_prompt: Str
+    // What the server wants from the model.
+    preferences: AgpModelPreferences
+    // The most tokens the server wants back.
+    max_tokens: Int
+    // Sampling temperature, or -1.0 for the client's default.
+    temperature: Float
+    // Sequences the model should stop at.
+    stop_sequences: [Str]
+    // Whether the server wants the client's own MCP context included.
+    //
+    // `none`, `thisServer` or `allServers` in the protocol, as a
+    // string here because it is three names and a fourth would be a
+    // breaking change to an enum.
+    include_context: Str
+
+// ── Prompts ──────────────────────────────────────────────────────────
+
+// The `prompts/list` request.
+pub fn list_request(id: agpwire.AgpId, cursor: Str) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpprompt.list_request")
+
+// The prompts in a `prompts/list` result.
+pub fn prompts_of(result: JsonValueH) -> Result<[AgpPrompt], agperror.AgpFault> []
+    todo("agent-proto-nv.agpprompt.prompts_of")
+
+// The next cursor in a list result, or an empty string.
+pub fn next_cursor_of(result: JsonValueH) -> Str []
+    todo("agent-proto-nv.agpprompt.next_cursor_of")
+
+// The `prompts/get` request.
+pub fn get_request(id: agpwire.AgpId, name: Str, names: [Str],
+                   values: [Str]) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpprompt.get_request")
+
+// The messages in a `prompts/get` result.
+pub fn messages_of(result: JsonValueH) -> Result<[AgpTurn], agperror.AgpFault> []
+    todo("agent-proto-nv.agpprompt.messages_of")
+
+// The description in a `prompts/get` result.
+pub fn description_of(result: JsonValueH) -> Str []
+    todo("agent-proto-nv.agpprompt.description_of")
+
+// A `prompts/get` result a server should answer with.
+pub fn get_result(id: agpwire.AgpId, description: Str, messages: [AgpTurn]) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpprompt.get_result")
+
+// Which of a prompt's arguments are required.
+//
+// What a user interface has to insist on before it enables the
+// command, and what a caller that filled in half of them gets refused
+// for otherwise.
+pub fn required_arguments(p: AgpPrompt) -> [Str] []
+    todo("agent-proto-nv.agpprompt.required_arguments")
+
+// Whether a set of argument names satisfies a prompt.
+//
+// The local check, so a missing argument is caught before the round
+// trip rather than as a `-32602`.
+pub fn arguments_complete(p: AgpPrompt, names: [Str]) -> Bool []
+    todo("agent-proto-nv.agpprompt.arguments_complete")
+
+// Whether a prompt is meant to be offered to a PERSON rather than to a
+// model: always true.
+//
+// A function rather than a sentence, because it is the distinction
+// this module's header opens with and because a client that offered
+// prompts to a model as tools would have handed it actions the user
+// never chose. A test can assert the intent; a paragraph cannot.
+pub fn is_user_facing(p: AgpPrompt) -> Bool []
+    todo("agent-proto-nv.agpprompt.is_user_facing")
+
+// The `notifications/prompts/list_changed`.
+pub fn list_changed_notification() -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpprompt.list_changed_notification")
+
+// ── Sampling ─────────────────────────────────────────────────────────
+
+// Preferences with nothing expressed.
+//
+// What a server that has no opinion sends, and the value a caller
+// builds on rather than writing four numbers.
+pub fn no_preferences() -> AgpModelPreferences []
+    todo("agent-proto-nv.agpprompt.no_preferences")
+
+// The `sampling/createMessage` request, which a SERVER sends to a
+// CLIENT.
+//
+// `agpwire.originator_of` answers `AgpServer` for it, and
+// `agpsession.may_send` refuses it from a client — so the direction is
+// checked rather than remembered.
+pub fn sampling_request(id: agpwire.AgpId, s: AgpSampling) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpprompt.sampling_request")
+
+// The sampling request in a message's params, for the client that has
+// to decide about it.
+pub fn sampling_of(params: JsonValueH) -> Result<AgpSampling, agperror.AgpFault> []
+    todo("agent-proto-nv.agpprompt.sampling_of")
+
+// A sampling result a client answers with.
+//
+// `model` is the model the client ACTUALLY used, which may be none of
+// the server's hints — and saying so is the protocol being honest
+// about who chose.
+pub fn sampling_result(id: agpwire.AgpId, role: AgpRole, content: agptool.AgpContent, model: Str,
+                       stop_reason: Str) -> agpwire.AgpMessage []
+    todo("agent-proto-nv.agpprompt.sampling_result")
+
+// The model a sampling result says was used.
+pub fn model_of(result: JsonValueH) -> Str []
+    todo("agent-proto-nv.agpprompt.model_of")
+
+// Why the model stopped: `endTurn`, `stopSequence`, `maxTokens`, or a
+// name the client chose.
+pub fn stop_reason_of(result: JsonValueH) -> Str []
+    todo("agent-proto-nv.agpprompt.stop_reason_of")
+
+// Whether the specification says a client should ask its user before
+// running this: always true.
+//
+// The human-in-the-loop rule as a value. A client that skips it has
+// skipped something NAMED, which is the difference between a decision
+// and an omission — and a reviewer can grep for the call.
+pub fn requires_approval(s: AgpSampling) -> Bool []
+    todo("agent-proto-nv.agpprompt.requires_approval")
+
+// A one-line summary of what a server is asking for, for the approval
+// prompt a client shows.
+//
+// Published because every client needs one and because a client that
+// wrote its own would show the raw JSON, which is not something a
+// person can consent to.
+pub fn describe_request(s: AgpSampling) -> Str []
+    todo("agent-proto-nv.agpprompt.describe_request")
+
+// Whether the request asks for context from OTHER servers.
+//
+// `includeContext: "allServers"`, which means one server would see
+// what a person said to another. The field a client should show most
+// prominently, and its own predicate so it cannot be missed in a
+// string comparison.
+pub fn crosses_servers(s: AgpSampling) -> Bool []
+    todo("agent-proto-nv.agpprompt.crosses_servers")

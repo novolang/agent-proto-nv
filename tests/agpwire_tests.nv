@@ -1,0 +1,170 @@
+// agpwire_tests.nv — the envelope: four shapes, two id spellings, and
+// the batch that answers nothing.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: agent-proto-nv.<module>.<fn>`.
+//
+// THE THREE ASSERTIONS THIS SUITE EXISTS FOR:
+//
+//   a notification is a DIFFERENT VALUE from a request, because
+//   sending one where the other belongs is a wait for an answer that
+//   was never coming;
+//
+//   `AgpIdNum(3)` and `AgpIdStr("3")` are DIFFERENT IDS, because a
+//   library that normalised them would match a response to the wrong
+//   request in a session that used both;
+//
+//   and a batch of only notifications expects NO response at all —
+//   not an empty array — which is the case a caller waiting on a batch
+//   hangs on.
+
+use std.test
+use std.list
+use agpwire
+use agperror
+use agpmeta
+
+@test
+fn test_a_notification_is_a_different_value_from_a_request() [io]
+    let req = agpwire.request(AgpIdNum(1), "tools/list", None)
+    let note = agpwire.notification("notifications/initialized", None)
+
+    test.case("THE CLAIM: only one of them expects an answer")
+    test.assert(agpwire.expects_response(req))
+    test.assert(agpwire.expects_response(note) == false)
+
+    test.case("and only one of them has an id, which is the whole difference")
+    test.assert(agpwire.id_of(req) != None)
+    test.assert(agpwire.id_of(note) == None)
+
+    test.case("a response is neither")
+    test.assert(agpwire.is_response(req) == false)
+    test.assert(agpwire.expects_response(
+        agpwire.error_for(AgpIdNum(1), AgpRpcError { code: 0 - 32601,
+                                                     message: "no", data: None })) == false)
+
+    test.case("the method a notification carries says which it should have been")
+    test.assert(agpwire.is_notification_method("notifications/initialized"))
+    test.assert(agpwire.is_notification_method("tools/list") == false)
+
+@test
+fn test_two_id_spellings_are_two_ids() [io]
+    test.case("THE CLAIM: an answer to 3 is not an answer to \"3\"")
+    test.assert(agpwire.id_eq(AgpIdNum(3), AgpIdStr("3")) == false)
+    test.assert(agpwire.id_eq(AgpIdNum(3), AgpIdNum(3)))
+    test.assert(agpwire.id_eq(AgpIdStr("a"), AgpIdStr("a")))
+
+    test.case("even though both print the same, which is why text is for READING")
+    test.assert(agpwire.id_text(AgpIdNum(3)) == agpwire.id_text(AgpIdStr("3")))
+
+@test
+fn test_the_jsonrpc_version_is_a_function_because_a_wrong_one_looks_like_transport() [io]
+    test.case("THE CLAIM: every message carries it and every peer rejects a wrong one")
+    test.assert(agpwire.jsonrpc_version() == "2.0")
+
+    test.case("and the standard codes are functions for the same reason")
+    test.assert(agperror.code_parse_error() == 0 - 32700)
+    test.assert(agperror.code_invalid_request() == 0 - 32600)
+    test.assert(agperror.code_method_not_found() == 0 - 32601)
+    test.assert(agperror.code_invalid_params() == 0 - 32602)
+    test.assert(agperror.code_internal_error() == 0 - 32603)
+
+    test.case("with a reserved range a server's own codes must stay outside")
+    let r = agperror.reserved_code_range()
+    test.assert(r[0] == 0 - 32768)
+    test.assert(r[1] == 0 - 32000)
+    test.assert(agperror.is_standard_code(0 - 32601))
+    test.assert(agperror.is_standard_code(0 - 1) == false)
+    test.assert(agperror.standard_message(0 - 32601) != "")
+
+@test
+fn test_a_batch_of_notifications_expects_nothing_back() [io]
+    let notes = [agpwire.notification("notifications/initialized", None),
+                 agpwire.notification("notifications/cancelled", None)]
+    let mixed = [agpwire.request(AgpIdNum(1), "ping", None),
+                 agpwire.notification("notifications/initialized", None)]
+
+    test.case("THE CLAIM: the peer sends NOTHING, not an empty array")
+    match agpwire.batch(notes)
+        Err(_) => test.assert(false)
+        Ok(b)  =>
+            test.assert(agpwire.batch_expects_response(b) == false)
+            test.assert(agpwire.batch_response_count(b) == 0)
+
+    test.case("and a mixed batch expects one answer, not two")
+    match agpwire.batch(mixed)
+        Err(_) => test.assert(false)
+        Ok(b)  =>
+            test.assert(agpwire.batch_expects_response(b))
+            test.assert(agpwire.batch_response_count(b) == 1)
+
+    test.case("an empty batch is refused, because JSON-RPC forbids it")
+    match agpwire.batch([])
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(agperror.describe(e) != "")
+
+@test
+fn test_the_protocol_is_bidirectional_and_the_direction_is_a_fact_per_method() [io]
+    test.case("THE CLAIM: a client that RECEIVED tools/list has met a peer doing wrong")
+    test.assert(agpwire.originator_of("tools/list") == AgpClient)
+    test.assert(agpwire.originator_of("resources/read") == AgpClient)
+
+    test.case("and sampling goes the OTHER WAY — a server asking a client to run a model")
+    test.assert(agpwire.originator_of("sampling/createMessage") == AgpServer)
+    test.assert(agpwire.originator_of("roots/list") == AgpServer)
+
+    test.case("ping is symmetric, which is why it is a third answer and not a boolean")
+    test.assert(agpwire.originator_of("ping") == AgpEitherSide)
+
+@test
+fn test_an_unknown_method_is_not_an_error_and_an_ambiguous_message_is() [io]
+    test.case("THE CLAIM: MCP is extensible, so a method this package does not know is data")
+    test.assert(agpwire.is_known_method("tools/list"))
+    test.assert(agpwire.is_known_method("vendor/x/thing") == false)
+    test.assert(list.len(agpwire.known_methods()) >= 10)
+
+    test.case("but a message with both a result and an error is a shape the protocol forbids")
+    test.assert(agperror.is_fatal(AgpAmbiguousMessage) == false)
+    test.assert(agperror.describe(AgpAmbiguousMessage) != "")
+
+    test.case("and a fault becomes an error object to SEND, one way only")
+    test.assert(agperror.as_rpc_error(AgpUnknownMethod("x")).code
+                == agperror.code_method_not_found())
+
+@test
+fn test_cancellation_is_advisory_and_the_answer_may_still_arrive() [io]
+    test.case("THE CLAIM: the response to a cancelled request MAY STILL COME")
+    test.assert(agpmeta.response_may_still_arrive())
+
+    test.case("which is why an unknown id is DROPPED rather than fatal")
+    test.assert(agperror.is_fatal(AgpUnknownId("7")) == false)
+
+    test.case("the cancellation itself expects nothing, being a notification")
+    test.assert(agpwire.expects_response(
+        agpmeta.cancel_notification(AgpIdNum(7), "user pressed escape")) == false)
+
+    test.case("and initialize is the one request that may NOT be cancelled")
+    test.assert(agpmeta.may_cancel("tools/call"))
+    test.assert(agpmeta.may_cancel("initialize") == false)
+
+@test
+fn test_the_log_levels_are_ordered_and_the_comparison_is_not_alphabetical() [io]
+    test.case("THE CLAIM: a client that set warning wants warning and everything above")
+    test.assert(agpmeta.level_at_least(AgpLogError, AgpWarning))
+    test.assert(agpmeta.level_at_least(AgpEmergency, AgpWarning))
+    test.assert(agpmeta.level_at_least(AgpDebug, AgpWarning) == false)
+
+    test.case("which comparing the NAMES would get exactly backwards")
+    test.assert(agpmeta.level_name(AgpAlert) == "alert")
+    test.assert(agpmeta.level_name(AgpDebug) == "debug")
+
+    test.case("there are eight, from syslog, and the list is published in order")
+    test.assert(list.len(agpmeta.levels()) == 8)
+
+    test.case("and a name the protocol does not have is refused rather than defaulted")
+    match agpmeta.level_of_name("verbose")
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(agperror.describe(e) != "")
+    match agpmeta.level_of_name("notice")
+        Err(_) => test.assert(false)
+        Ok(l)  => test.assert(l == AgpNotice)
