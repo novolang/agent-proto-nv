@@ -60,7 +60,7 @@ novo        = ">= 0.8.9"
 # landed and answer exactly that.  The note is stale, this package does
 # not carry it forward, and `agpcodec.distinguishes_empty_object_from_null`
 # answers true — asserted rather than assumed.
-schema-nv = "^0.0.1"
+schema-nv = "^0.0.2"
 
 # NOT a JSON package.  The value this protocol carries is the STANDARD
 # LIBRARY's (`std.json`), for the same reason schema-nv gives: a second
