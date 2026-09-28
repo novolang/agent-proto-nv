@@ -1,6 +1,6 @@
 [package]
 name        = "agent-proto-nv"
-version     = "0.0.2"
+version     = "0.0.3"
 description = "The Model Context Protocol as novo-lang types over the standard library's JSON value: the JSON-RPC 2.0 envelope, initialize and capabilities, tools with schema-nv compiled input schemas, resources and templates, prompts, sampling, roots, logging, progress and cancellation.  The load-bearing value is `AgpSession` — a transport-independent state machine that says what may be sent in which state, because MCP's real failure mode is ORDERING and no message type shows it.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
@@ -60,7 +60,7 @@ novo        = ">= 0.8.9"
 # landed and answer exactly that.  The note is stale, this package does
 # not carry it forward, and `agpcodec.distinguishes_empty_object_from_null`
 # answers true — asserted rather than assumed.
-schema-nv = "^0.0.2"
+schema-nv = "^0.1.0"
 
 # NOT a JSON package.  The value this protocol carries is the STANDARD
 # LIBRARY's (`std.json`), for the same reason schema-nv gives: a second
